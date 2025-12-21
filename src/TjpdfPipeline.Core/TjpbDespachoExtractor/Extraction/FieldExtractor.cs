@@ -52,7 +52,6 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
         private readonly PeritoCatalog _peritoCatalog;
         private readonly HonorariosTable _honorarios;
         private readonly diff_match_patch _dmpField;
-        private readonly bool _disableFallbacks;
 
         public FieldExtractor(TjpbDespachoConfig cfg)
         {
@@ -73,16 +72,13 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                 Match_Threshold = 0.6f,
                 Match_Distance = 5000
             };
-            _disableFallbacks = cfg.DisableFallbacks;
         }
 
         public Dictionary<string, FieldInfo> ExtractAll(DespachoContext ctx)
         {
             var result = new Dictionary<string, FieldInfo>(StringComparer.OrdinalIgnoreCase);
             var seed = ExtractFromRegionTemplates(ctx);
-            var strategyHits = _disableFallbacks
-                ? new Dictionary<string, FieldInfo>(StringComparer.OrdinalIgnoreCase)
-                : _strategies.Extract(ctx);
+            var strategyHits = _strategies.Extract(ctx);
             seed = MergeSeed(seed, strategyHits);
 
             result["PROCESSO_ADMINISTRATIVO"] = Prefer(seed, "PROCESSO_ADMINISTRATIVO", ExtractProcessoAdministrativo(ctx));
@@ -125,36 +121,11 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
             EnsureField(result, "PARCELA");
             EnsureField(result, "NUM_PERITO");
 
-            if (_disableFallbacks)
-            {
-                EnforceTemplateOnly(result);
-            }
-            else
-            {
-                PostValidate(result);
-                EnrichWithPeritoCatalog(result);
-                ApplyHonorariosLookup(result);
-            }
+            PostValidate(result);
+            EnrichWithPeritoCatalog(result);
+            ApplyHonorariosLookup(result);
 
             return result;
-        }
-
-        private void EnforceTemplateOnly(Dictionary<string, FieldInfo> result)
-        {
-            foreach (var key in result.Keys.ToList())
-            {
-                var info = result[key];
-                if (info == null) continue;
-                if (IsFallbackMethod(info.Method))
-                    result[key] = NotFound();
-            }
-        }
-
-        private bool IsFallbackMethod(string? method)
-        {
-            if (string.IsNullOrWhiteSpace(method)) return true;
-            var m = method.Trim();
-            return !m.StartsWith("template_", StringComparison.OrdinalIgnoreCase);
         }
 
         private FieldInfo Prefer(Dictionary<string, FieldInfo> seed, string key, FieldInfo fallback)

@@ -10,7 +10,6 @@ namespace FilterPDF.TjpbDespachoExtractor.Config
     {
         public string Version { get; set; } = "2025-12-19";
         public string BaseDir { get; set; } = "";
-        public bool DisableFallbacks { get; set; } = false;
         public ThresholdsConfig Thresholds { get; set; } = new ThresholdsConfig();
         public AnchorsConfig Anchors { get; set; } = new AnchorsConfig();
         public TemplateRegionsConfig TemplateRegions { get; set; } = new TemplateRegionsConfig();

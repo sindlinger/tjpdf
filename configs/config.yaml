@@ -1,5 +1,4 @@
 version: "2025-12-19"
-disable_fallbacks: true
 
 field_strategies:
   enabled: true

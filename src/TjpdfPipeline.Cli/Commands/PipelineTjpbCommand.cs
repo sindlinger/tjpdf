@@ -8,6 +8,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using FilterPDF.Utils;
 using System.Text;
+using System.Security.Cryptography;
 using FilterPDF.TjpbDespachoExtractor.Config;
 using FilterPDF.TjpbDespachoExtractor.Extraction;
 using FilterPDF.TjpbDespachoExtractor.Utils;
@@ -44,6 +45,7 @@ namespace FilterPDF.Commands
             string pgUri = FilterPDF.Utils.PgDocStore.DefaultPgUri;
             string configPath = Path.Combine("configs", "config.yaml");
             var analysesByProcess = new Dictionary<string, PDFAnalysisResult>();
+            var pdfMetaByProcess = new Dictionary<string, Dictionary<string, object>>();
             string cacheDir = Path.Combine(Directory.GetCurrentDirectory(), "tmp", "cache");
             // Localiza configs/fields e docid/layout_hashes.csv respeitando cwd ou pasta do binário.
             string cwd = Directory.GetCurrentDirectory();
@@ -132,6 +134,28 @@ namespace FilterPDF.Commands
 
                     var procName = DeriveProcessName(pdfPath);
                     analysesByProcess[procName] = analysis;
+                    if (!useCache)
+                    {
+                        try
+                        {
+                            var bytes = File.ReadAllBytes(pdfPath);
+                            var sha = ComputeSha256Hex(bytes);
+                            var size = bytes.LongLength;
+                            PgDocStore.UpsertRawFile(pgUri, procName, pdfPath, bytes);
+                            pdfMetaByProcess[procName] = new Dictionary<string, object>
+                            {
+                                ["fileName"] = Path.GetFileName(pdfPath),
+                                ["filePath"] = pdfPath,
+                                ["pages"] = analysis.DocumentInfo.TotalPages,
+                                ["sha256"] = sha,
+                                ["fileSize"] = size
+                            };
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"[pipeline-tjpb] WARN raw file {procName}: {ex.Message}");
+                        }
+                    }
                     ExtractionResult? despachoResult = null;
                     try
                     {
@@ -210,7 +234,15 @@ namespace FilterPDF.Commands
                 var firstDoc = grp.documents.FirstOrDefault();
                 var sourcePath = firstDoc != null && firstDoc.TryGetValue("pdf_path", out var pp) ? pp?.ToString() ?? procName : procName;
                 var analysis = analysesByProcess.TryGetValue(procName, out var an) ? an : new PDFAnalysisResult();
-                var payload = new { process = procName, documents = grp.documents, paragraph_stats = paragraphStats };
+                var pdfMeta = pdfMetaByProcess.TryGetValue(procName, out var meta) ? meta : new Dictionary<string, object>
+                {
+                    ["fileName"] = Path.GetFileName(sourcePath ?? ""),
+                    ["filePath"] = sourcePath ?? "",
+                    ["pages"] = analysis.DocumentInfo.TotalPages,
+                    ["sha256"] = "",
+                    ["fileSize"] = 0L
+                };
+                var payload = new { process = procName, pdf = pdfMeta, documents = grp.documents, paragraph_stats = paragraphStats };
                 var tokenProc = JToken.FromObject(payload);
                 foreach (var v in tokenProc.SelectTokens("$..*").OfType<JValue>())
                 {
@@ -385,10 +417,7 @@ namespace FilterPDF.Commands
                 if (despachoFields.Count > 0)
                     extractedFields.AddRange(despachoFields);
             }
-            if (!(_tjpbCfg?.DisableFallbacks ?? false))
-                AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage);
-            else
-                extractedFields = FilterTemplateOnly(extractedFields);
+            AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage);
             var forensics = BuildForensics(d, analysis, docText, wordsWithCoords);
             var despachoInfo = DetectDespachoTipo(docText, lastTwoText);
 
@@ -556,6 +585,8 @@ namespace FilterPDF.Commands
 
             // clusterizar linhas (y) por página
             var lineObjs = BuildLines(words);
+            // parágrafos (forensics)
+            var paragraphs = BuildParagraphsFromWords(words);
 
             // fontes/tamanhos dominantes
             var fontNames = words.Select(w => w["font"]?.ToString() ?? "").Where(f => f != "").ToList();
@@ -595,6 +626,16 @@ namespace FilterPDF.Commands
             result["repeat_lines"] = repeats;
             result["anchors"] = anchors;
             result["bands"] = bands;
+            result["paragraphs"] = paragraphs.Select(p => new
+            {
+                page = p.Page,
+                nx0 = p.NX0,
+                ny0 = p.Ny0,
+                nx1 = p.NX1,
+                ny1 = p.Ny1,
+                text = p.Text,
+                tokens = p.Tokens
+            }).ToList();
             result["annotations"] = ann;
 
             return result;
@@ -760,6 +801,9 @@ namespace FilterPDF.Commands
         {
             public int Page { get; set; }
             public double Ny0 { get; set; }
+            public double Ny1 { get; set; }
+            public double NX0 { get; set; }
+            public double NX1 { get; set; }
             public string Text { get; set; } = "";
             public List<string> Tokens { get; set; } = new List<string>();
         }
@@ -807,6 +851,9 @@ namespace FilterPDF.Commands
                     {
                         Page = kv.Key,
                         Ny0 = cl.Min(w => Convert.ToDouble(w["ny0"])),
+                        Ny1 = cl.Max(w => Convert.ToDouble(w["ny1"])),
+                        NX0 = cl.Min(w => Convert.ToDouble(w["nx0"])),
+                        NX1 = cl.Max(w => Convert.ToDouble(w["nx1"])),
                         Text = text,
                         Tokens = tokens
                     });
@@ -1369,16 +1416,6 @@ namespace FilterPDF.Commands
             });
         }
 
-        private List<Dictionary<string, object>> FilterTemplateOnly(List<Dictionary<string, object>> fields)
-        {
-            if (fields == null) return new List<Dictionary<string, object>>();
-            return fields.Where(f =>
-            {
-                var method = f.TryGetValue("method", out var m) ? m?.ToString() ?? "" : "";
-                return method.StartsWith("template_", StringComparison.OrdinalIgnoreCase) ||
-                       method.Equals("not_found", StringComparison.OrdinalIgnoreCase);
-            }).ToList();
-        }
 
         private string ClassifyBucket(string name, string text)
         {
@@ -1389,6 +1426,16 @@ namespace FilterPDF.Commands
             if (IsPrincipal(n, snippet)) return "principal";
             if (IsApoio(n, snippet)) return "apoio";
             return "outro";
+        }
+
+        private string ComputeSha256Hex(byte[] data)
+        {
+            using var sha = SHA256.Create();
+            var hash = sha.ComputeHash(data);
+            var sb = new StringBuilder(hash.Length * 2);
+            foreach (var b in hash)
+                sb.Append(b.ToString("x2"));
+            return sb.ToString();
         }
 
         private bool IsLaudo(string name, string text)
