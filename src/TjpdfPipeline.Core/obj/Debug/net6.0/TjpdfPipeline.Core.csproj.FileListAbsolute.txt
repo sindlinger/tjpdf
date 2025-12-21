@@ -1,5 +1,0 @@
-/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/obj/Debug/net6.0/TjpdfPipeline.Core.csproj.AssemblyReference.cache
-/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/obj/Debug/net6.0/TjpdfPipeline.Core.GeneratedMSBuildEditorConfig.editorconfig
-/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/obj/Debug/net6.0/TjpdfPipeline.Core.AssemblyInfoInputs.cache
-/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/obj/Debug/net6.0/TjpdfPipeline.Core.AssemblyInfo.cs
-/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/obj/Debug/net6.0/TjpdfPipeline.Core.csproj.CoreCompileInputs.cache

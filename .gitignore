@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+*.cache
+*.pdb
+*.dll
+*.exe
+*.log
+*.tmp
+*.bak
