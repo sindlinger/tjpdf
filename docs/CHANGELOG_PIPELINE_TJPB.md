@@ -14,6 +14,8 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 - JSON do documento: `fields_missing` passa a registrar campos obrigatórios ausentes.
 - `--print-json` no comando `pipeline-tjpb` para inspecionar o JSON completo sem Postgres.
 - BBox em fields (quando possível) e `bbox=null` padronizado quando ausente.
+- `arbitrados.yml`: novos padrões para honorários fixados e “valor arbitrado” pós‑valor; bucket liberado para `principal`, `laudo` e `outro`.
+- `arbitrados.yml`: padrão para “reserva ... no valor de R$” agora aceita quebra de linha.
 
 ### Observações
 - O pipeline atual já usa `configs/fields/*.yml`, `configs/config.yaml` e referências em `src/PipelineTjpb/reference/*`.

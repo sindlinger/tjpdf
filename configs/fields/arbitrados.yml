@@ -3,6 +3,9 @@ priority: 1.25
 sources:
   - bucket: principal
     name_matches: ["*Despacho*.html", "*Despacho*.pdf", "*Senten*", "*Decisao*", "*Decisão*", "*Certidao*", "*Certidão*"]
+  - bucket: principal
+  - bucket: laudo
+  - bucket: outro
   - bucket: apoio
     name_matches: ["*Senten*", "*Decis*", "*Certida*"]
 patterns:
@@ -17,6 +20,21 @@ patterns:
     field: "VALOR ARBITRADO - JZ"
     weight: 1.25
   - type: regex
+    label: honorarios_periciais
+    pattern: 'honor[aá]rios\s+periciais[^\n]{0,80}?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,\d{2})'
+    field: "VALOR ARBITRADO - JZ"
+    weight: 1.25
+  - type: regex
+    label: honorarios_fixados
+    pattern: 'honor[aá]rios[^\n]{0,80}?fixad[oa]s?[^\n]{0,40}?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,\d{2})'
+    field: "VALOR ARBITRADO - JZ"
+    weight: 1.25
+  - type: regex
+    label: valor_arbitrado_pos
+    pattern: 'R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,\d{2})[^\n]{0,60}?valor\s+arbitrad'
+    field: "VALOR ARBITRADO - JZ"
+    weight: 1.1
+  - type: regex
     label: despacho_de
     pattern: 'autorizo\s+o\s+pagamento[^\n]{0,120}?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,\d{2})'
     field: "VALOR ARBITRADO - DE"
@@ -24,6 +42,11 @@ patterns:
   - type: regex
     label: reserva_orcamentaria
     pattern: 'reserva\s+orçament[aá]ria[^\n]{0,120}?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,\d{2})'
+    field: "VALOR ARBITRADO - DE"
+    weight: 1.2
+  - type: regex
+    label: reserva_respectiva
+    pattern: 'reserva[\s\S]{0,120}?no\s+valor\s+de\s*R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,\d{2})'
     field: "VALOR ARBITRADO - DE"
     weight: 1.2
   - type: regex
