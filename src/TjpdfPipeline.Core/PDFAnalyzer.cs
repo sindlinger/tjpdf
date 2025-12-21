@@ -71,6 +71,7 @@ namespace FilterPDF
                 result.ColorProfiles = ExtractColorProfiles();
                 result.ModificationDates = BuildModificationDates(result);
                 result.Bookmarks = ExtractBookmarkStructure();
+                result.BookmarksFlat = FlattenBookmarks(result.Bookmarks);
                 // PDFA compliance básica: se tagged e sem encriptação simples heurística
                 result.PDFACompliance = new PDFAInfo { IsPDFA = doc?.IsTagged() ?? false };
                 result.Multimedia = new List<MultimediaInfo>(); // não implementado ainda
@@ -879,6 +880,31 @@ namespace FilterPDF
             return b;
         }
 
+        private List<BookmarkFlatItem> FlattenBookmarks(BookmarkStructure bookmarks)
+        {
+            var flat = new List<BookmarkFlatItem>();
+            if (bookmarks?.RootItems == null || bookmarks.RootItems.Count == 0) return flat;
+            foreach (var item in bookmarks.RootItems)
+                FlattenBookmarkItem(item, flat);
+            return flat;
+        }
+
+        private void FlattenBookmarkItem(BookmarkItem item, List<BookmarkFlatItem> flat)
+        {
+            if (item == null) return;
+            flat.Add(new BookmarkFlatItem
+            {
+                Title = item.Title ?? "",
+                PageNumber = item.Destination?.PageNumber ?? 0,
+                Level = item.Level,
+                HasChildren = item.Children != null && item.Children.Count > 0,
+                ChildrenCount = item.Children?.Count ?? 0
+            });
+            if (item.Children == null || item.Children.Count == 0) return;
+            foreach (var child in item.Children)
+                FlattenBookmarkItem(child, flat);
+        }
+
         private List<BookmarkItem> ConvertOutline(PdfOutline outline, int level = 0)
         {
             var items = new List<BookmarkItem>();
@@ -892,24 +918,150 @@ namespace FilterPDF
                 };
                 item.Destination = new BookmarkDestination { PageNumber = 1, Type = "Destination" };
                 var dest = child.GetDestination();
-                var destObj = dest?.GetPdfObject();
-                if (destObj is PdfArray destArray && doc != null)
+                var pageFromDest = ResolveDestinationPage(dest);
+                if (pageFromDest == 0)
                 {
-                    var pageObj = destArray.Get(0);
-                    for (int p = 1; p <= doc.GetNumberOfPages(); p++)
-                    {
-                        var pagePdfObj = doc.GetPage(p).GetPdfObject();
-                        if (pageObj != null && pageObj.Equals(pagePdfObj))
-                        {
-                            item.Destination.PageNumber = p;
-                            break;
-                        }
-                    }
+                    var destObj = dest?.GetPdfObject();
+                    pageFromDest = ResolveDestToPage(destObj);
                 }
+                if (pageFromDest > 0)
+                    item.Destination.PageNumber = pageFromDest;
                 item.Children = ConvertOutline(child, level + 1);
                 items.Add(item);
             }
             return items;
+        }
+
+        private int ResolveDestinationPage(PdfDestination? destination)
+        {
+            if (destination == null || doc == null) return 0;
+            try
+            {
+                var nameTree = doc.GetCatalog().GetNameTree(PdfName.Dests);
+                var names = nameTree?.GetNames();
+                var destPage = destination.GetDestinationPage(names);
+                if (destPage is PdfDictionary dict)
+                    return doc.GetPageNumber(dict);
+            }
+            catch
+            {
+                // ignore and fallback
+            }
+            return 0;
+        }
+
+        private int ResolveDestToPage(PdfObject? destObj)
+        {
+            if (destObj == null || doc == null) return 0;
+
+            if (destObj is PdfDictionary dict)
+            {
+                var actionType = dict.GetAsName(PdfName.S);
+                if (PdfName.GoTo.Equals(actionType))
+                    destObj = dict.Get(PdfName.D);
+            }
+
+            if (destObj is PdfArray arr)
+                return ResolveArrayDest(arr);
+
+            if (destObj is PdfName || destObj is PdfString)
+            {
+                var resolved = ResolveNamedDestination(destObj);
+                if (resolved is PdfArray namedArr)
+                    return ResolveArrayDest(namedArr);
+            }
+            return 0;
+        }
+
+        private int ResolveArrayDest(PdfArray arr)
+        {
+            if (arr == null || arr.Size() == 0 || doc == null) return 0;
+            var first = arr.Get(0);
+            if (first is PdfNumber num)
+                return (int)num.GetValue() + 1;
+
+            for (int p = 1; p <= doc.GetNumberOfPages(); p++)
+            {
+                var pagePdfObj = doc.GetPage(p).GetPdfObject();
+                if (first.Equals(pagePdfObj)) return p;
+                var ref1 = first.GetIndirectReference();
+                var ref2 = pagePdfObj.GetIndirectReference();
+                if (ref1 != null && ref2 != null && ref1.GetObjNumber() == ref2.GetObjNumber())
+                    return p;
+            }
+            return 0;
+        }
+
+        private PdfObject? ResolveNamedDestination(PdfObject nameObj)
+        {
+            if (doc == null) return null;
+            var catalog = doc.GetCatalog().GetPdfObject();
+            if (catalog == null) return null;
+
+            var dests = catalog.GetAsDictionary(PdfName.Dests);
+            if (dests != null)
+            {
+                var hit = ResolveInDestsDict(dests, nameObj);
+                if (hit != null) return hit;
+            }
+
+            var names = catalog.GetAsDictionary(PdfName.Names);
+            var nameTree = names?.GetAsDictionary(PdfName.Dests);
+            if (nameTree != null)
+                return ResolveInNameTree(nameTree, nameObj);
+
+            return null;
+        }
+
+        private PdfObject? ResolveInDestsDict(PdfDictionary dests, PdfObject nameObj)
+        {
+            if (dests == null || nameObj == null) return null;
+            if (nameObj is PdfName nm)
+                return dests.Get(nm);
+            if (nameObj is PdfString str)
+                return dests.Get(new PdfName(str.ToUnicodeString()));
+            return null;
+        }
+
+        private PdfObject? ResolveInNameTree(PdfDictionary node, PdfObject nameObj)
+        {
+            if (node == null || nameObj == null) return null;
+            string key = NameKey(nameObj);
+            if (node.ContainsKey(PdfName.Names))
+            {
+                var names = node.GetAsArray(PdfName.Names);
+                if (names != null)
+                {
+                    for (int i = 0; i + 1 < names.Size(); i += 2)
+                    {
+                        var nm = names.Get(i);
+                        var val = names.Get(i + 1);
+                        if (NameKey(nm).Equals(key, StringComparison.Ordinal))
+                            return val;
+                    }
+                }
+            }
+            if (node.ContainsKey(PdfName.Kids))
+            {
+                var kids = node.GetAsArray(PdfName.Kids);
+                if (kids != null)
+                {
+                    for (int i = 0; i < kids.Size(); i++)
+                    {
+                        var kid = kids.GetAsDictionary(i);
+                        var hit = ResolveInNameTree(kid, nameObj);
+                        if (hit != null) return hit;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private string NameKey(PdfObject obj)
+        {
+            if (obj is PdfName nm) return nm.GetValue();
+            if (obj is PdfString str) return str.ToUnicodeString();
+            return obj?.ToString() ?? "";
         }
 
         private int CountBookmarks(List<BookmarkItem> items) => items.Count + items.Sum(i => CountBookmarks(i.Children));

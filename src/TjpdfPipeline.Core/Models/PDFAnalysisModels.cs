@@ -23,6 +23,7 @@ namespace FilterPDF
         public List<DigitalSignature> Signatures { get; set; } = new List<DigitalSignature>();
         public List<ColorProfile> ColorProfiles { get; set; } = new List<ColorProfile>();
         public BookmarkStructure Bookmarks { get; set; } = new BookmarkStructure();
+        public List<BookmarkFlatItem> BookmarksFlat { get; set; } = new List<BookmarkFlatItem>();
         public PDFAInfo PDFACompliance { get; set; } = new PDFAInfo();
         public List<MultimediaInfo> Multimedia { get; set; } = new List<MultimediaInfo>();
         // public List<RichMediaAnalysis> RichMediaAnalysis { get; set; }
@@ -461,6 +462,18 @@ namespace FilterPDF
         public List<BookmarkItem> RootItems { get; set; } = new List<BookmarkItem>();
         public int TotalCount { get; set; }
         public int MaxDepth { get; set; }
+    }
+
+    /// <summary>
+    /// Bookmark flat (título + página), para JSON hall
+    /// </summary>
+    public class BookmarkFlatItem
+    {
+        public string Title { get; set; } = "";
+        public int PageNumber { get; set; }
+        public int Level { get; set; }
+        public bool HasChildren { get; set; }
+        public int ChildrenCount { get; set; }
     }
     
     /// <summary>

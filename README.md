@@ -11,6 +11,12 @@ cd /mnt/c/git/tjpdf
 dotnet run --project /mnt/c/git/tjpdf/src/TjpdfPipeline.Cli -- pipeline-tjpb --input-dir /caminho/para/pdfs --config /mnt/c/git/tjpdf/configs/config.yaml
 ```
 
+## Bookmarks (títulos + páginas)
+
+```bash
+dotnet run --project /mnt/c/git/tjpdf/src/TjpdfPipeline.Cli -- fetch-bookmark-titles --input-file /caminho/arquivo.pdf
+```
+
 ## Configuração
 
 - `/mnt/c/git/tjpdf/configs/config.yaml` (principal)

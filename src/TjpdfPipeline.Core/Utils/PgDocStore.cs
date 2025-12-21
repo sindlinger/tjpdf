@@ -411,7 +411,9 @@ namespace FilterPDF.Utils
                 string docType = Clean(GetStr(doc, "doc_type"));
                 string docKey = BuildDocKeySafe(label, seq, GetInt(doc, "start_page", 1));
 
-                var summary = GetDict(doc, "doc_summary");
+                var summary = doc;
+                if (doc.TryGetValue("doc_summary", out var dsObj) && dsObj is Dictionary<string, object> ds)
+                    summary = ds;
                 string headerOrigin = Clean(GetStr(summary, "origin_main"));
                 string headerTitle = Clean(GetStr(summary, "origin_sub"));
                 string headerSubtitle = Clean(GetStr(summary, "origin_extra"));
