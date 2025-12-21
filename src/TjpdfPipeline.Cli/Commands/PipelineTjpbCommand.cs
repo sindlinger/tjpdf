@@ -385,7 +385,10 @@ namespace FilterPDF.Commands
                 if (despachoFields.Count > 0)
                     extractedFields.AddRange(despachoFields);
             }
-            AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage);
+            if (!(_tjpbCfg?.DisableFallbacks ?? false))
+                AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage);
+            else
+                extractedFields = FilterTemplateOnly(extractedFields);
             var forensics = BuildForensics(d, analysis, docText, wordsWithCoords);
             var despachoInfo = DetectDespachoTipo(docText, lastTwoText);
 
@@ -1364,6 +1367,17 @@ namespace FilterPDF.Commands
                 ["weight"] = weight,
                 ["page"] = page
             });
+        }
+
+        private List<Dictionary<string, object>> FilterTemplateOnly(List<Dictionary<string, object>> fields)
+        {
+            if (fields == null) return new List<Dictionary<string, object>>();
+            return fields.Where(f =>
+            {
+                var method = f.TryGetValue("method", out var m) ? m?.ToString() ?? "" : "";
+                return method.StartsWith("template_", StringComparison.OrdinalIgnoreCase) ||
+                       method.Equals("not_found", StringComparison.OrdinalIgnoreCase);
+            }).ToList();
         }
 
         private string ClassifyBucket(string name, string text)
