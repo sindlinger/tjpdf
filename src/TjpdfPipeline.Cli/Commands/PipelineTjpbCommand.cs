@@ -722,7 +722,7 @@ namespace FilterPDF.Commands
             }
             if (directedFields.Count > 0)
                 extractedFields = MergeFields(extractedFields, directedFields);
-            AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage);
+            AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage, wordsWithCoords);
             var normalizedFields = NormalizeAndValidateFields(extractedFields);
             var forensics = BuildForensics(d, analysis, docText, wordsWithCoords);
             var despachoInfo = DetectDespachoTipo(docText, lastTwoText);
@@ -1999,7 +1999,7 @@ namespace FilterPDF.Commands
             return FieldScripts.RunScripts(scripts, namePdf, fullText ?? string.Empty, words, d.StartPage, bucket);
         }
 
-        private void AddDocSummaryFallbacks(List<Dictionary<string, object>> fields, Dictionary<string, object> docSummary, int page)
+        private void AddDocSummaryFallbacks(List<Dictionary<string, object>> fields, Dictionary<string, object> docSummary, int page, List<Dictionary<string, object>> words)
         {
             if (fields == null) return;
             string GetStr(string key)
@@ -2007,18 +2007,20 @@ namespace FilterPDF.Commands
                 return docSummary.TryGetValue(key, out var v) ? v?.ToString() ?? "" : "";
             }
 
-            AddFieldIfMissing(fields, "PROCESSO_ADMINISTRATIVO", GetStr("sei_process"), "doc_meta", 0.55, page);
-            AddFieldIfMissing(fields, "VARA", GetStr("juizo_vara"), "doc_meta", 0.55, page);
-            AddFieldIfMissing(fields, "COMARCA", GetStr("comarca"), "doc_meta", 0.55, page);
-            AddFieldIfMissing(fields, "PERITO", GetStr("interested_name"), "doc_meta", 0.50, page);
-            AddFieldIfMissing(fields, "ESPECIALIDADE", GetStr("interested_profession"), "doc_meta", 0.45, page);
-            AddFieldIfMissing(fields, "DATA", GetStr("signed_at"), "doc_meta", 0.45, page);
-            AddFieldIfMissing(fields, "ASSINANTE", GetStr("signer"), "doc_meta", 0.50, page);
+            AddFieldIfMissing(fields, "PROCESSO_ADMINISTRATIVO", GetStr("sei_process"), "doc_meta", 0.55, page, words);
+            AddFieldIfMissing(fields, "VARA", GetStr("juizo_vara"), "doc_meta", 0.55, page, words);
+            AddFieldIfMissing(fields, "COMARCA", GetStr("comarca"), "doc_meta", 0.55, page, words);
+            AddFieldIfMissing(fields, "PERITO", GetStr("interested_name"), "doc_meta", 0.50, page, words);
+            AddFieldIfMissing(fields, "ESPECIALIDADE", GetStr("interested_profession"), "doc_meta", 0.45, page, words);
+            AddFieldIfMissing(fields, "DATA", GetStr("signed_at"), "doc_meta", 0.45, page, words);
+            AddFieldIfMissing(fields, "ASSINANTE", GetStr("signer"), "doc_meta", 0.50, page, words);
         }
 
-        private void AddFieldIfMissing(List<Dictionary<string, object>> fields, string name, string value, string method, double weight, int page)
+        private void AddFieldIfMissing(List<Dictionary<string, object>> fields, string name, string value, string method, double weight, int page, List<Dictionary<string, object>> words)
         {
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(value)) return;
+            var bbox = FindBBoxForBand(words, value);
+            if (bbox != null) page = bbox.Value.page;
             var existing = fields.FirstOrDefault(f => string.Equals(f.TryGetValue("name", out var n) ? n?.ToString() : "", name, StringComparison.OrdinalIgnoreCase));
             if (existing != null)
             {
@@ -2030,17 +2032,35 @@ namespace FilterPDF.Commands
                 existing["method"] = method;
                 existing["weight"] = weight;
                 existing["page"] = page;
+                if (!existing.ContainsKey("bbox"))
+                {
+                    existing["bbox"] = bbox != null ? new Dictionary<string, double>
+                    {
+                        ["nx0"] = bbox.Value.nx0,
+                        ["ny0"] = bbox.Value.ny0,
+                        ["nx1"] = bbox.Value.nx1,
+                        ["ny1"] = bbox.Value.ny1
+                    } : null;
+                }
                 return;
             }
 
-            fields.Add(new Dictionary<string, object>
+            var item = new Dictionary<string, object>
             {
                 ["name"] = name,
                 ["value"] = value.Trim(),
                 ["method"] = method,
                 ["weight"] = weight,
                 ["page"] = page
-            });
+            };
+            item["bbox"] = bbox != null ? new Dictionary<string, double>
+            {
+                ["nx0"] = bbox.Value.nx0,
+                ["ny0"] = bbox.Value.ny0,
+                ["nx1"] = bbox.Value.nx1,
+                ["ny1"] = bbox.Value.ny1
+            } : null;
+            fields.Add(item);
         }
 
 
@@ -2349,6 +2369,12 @@ namespace FilterPDF.Commands
                 if (seen.Contains(key)) continue;
                 seen.Add(key);
                 dedup.Add(f);
+            }
+
+            foreach (var f in dedup)
+            {
+                if (!f.ContainsKey("bbox"))
+                    f["bbox"] = null;
             }
 
             return dedup;
@@ -2732,16 +2758,13 @@ namespace FilterPDF.Commands
                 ["weight"] = 0.6,
                 ["band"] = band
             };
-            if (bbox != null)
+            hit["bbox"] = bbox != null ? new Dictionary<string, double>
             {
-                hit["bbox"] = new Dictionary<string, double>
-                {
-                    ["nx0"] = bbox.Value.nx0,
-                    ["ny0"] = bbox.Value.ny0,
-                    ["nx1"] = bbox.Value.nx1,
-                    ["ny1"] = bbox.Value.ny1
-                };
-            }
+                ["nx0"] = bbox.Value.nx0,
+                ["ny0"] = bbox.Value.ny0,
+                ["nx1"] = bbox.Value.nx1,
+                ["ny1"] = bbox.Value.ny1
+            } : null;
             return hit;
         }
 
@@ -3098,6 +3121,13 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
                     ["page"] = ev?.Page1 ?? 0,
                     ["snippet"] = ev?.Snippet ?? "",
                     ["bboxN"] = ev?.BBoxN,
+                    ["bbox"] = ev?.BBoxN != null ? new Dictionary<string, double>
+                    {
+                        ["nx0"] = ev.BBoxN.X0,
+                        ["ny0"] = ev.BBoxN.Y0,
+                        ["nx1"] = ev.BBoxN.X1,
+                        ["ny1"] = ev.BBoxN.Y1
+                    } : null,
                     ["source"] = source
                 });
             }

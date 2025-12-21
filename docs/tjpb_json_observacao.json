@@ -82,7 +82,21 @@
         "font_dominant": "",
         "size_dominant": 0
       },
-      "fields": [],
+      "fields": [
+        {
+          "name": "",
+          "value": "",
+          "page": 0,
+          "method": "",
+          "weight": 0,
+          "bbox": {
+            "nx0": 0,
+            "ny0": 0,
+            "nx1": 0,
+            "ny1": 0
+          }
+        }
+      ],
       "band_fields": [],
       "bookmarks": [],
       "anexos_bookmarks": []
