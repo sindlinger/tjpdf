@@ -13,6 +13,7 @@ Este é o pipeline **oficial** deste repositório. Não existe pipeline paralelo
 
 3) **Segmentação e extração**
    - `/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/TjpbDespachoExtractor/Extraction/DespachoExtractor.cs`
+     - gera documentos `despacho` e `certidao_cm` na mesma hierarquia (`result.documents`)
    - `/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/TjpbDespachoExtractor/Extraction/FieldExtractor.cs`
    - `/mnt/c/git/tjpdf/src/TjpdfPipeline.Core/TjpbDespachoExtractor/Extraction/CertidaoExtraction.cs`
 

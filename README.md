@@ -19,6 +19,7 @@ dotnet run --project /mnt/c/git/tjpdf/src/TjpdfPipeline.Cli -- pipeline-tjpb --i
 ## Saída
 
 A saída padrão é **Postgres** (tabela `processes`, coluna `json`). Não gera arquivos por padrão.
+O extrator de despacho gera documentos `despacho` e `certidao_cm` na mesma hierarquia.
 
 ## Estrutura
 

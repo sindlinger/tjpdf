@@ -397,25 +397,47 @@ namespace FilterPDF.Commands
             }
 
             var docSummary = BuildDocSummary(d, pdfPath, docText, lastPageText, lastTwoText, header, footer, docBookmarks, analysis.Signatures, docLabel);
-            var despachoMatch = FindBestDespachoMatch(d, despachoResult, out var overlapRatio, out var overlapPages);
+            var despachoMatch = FindBestDespachoMatch(d, despachoResult, out var overlapRatio, out var overlapPages, "despacho");
+            var certidaoMatch = FindBestDespachoMatch(d, despachoResult, out var certOverlapRatio, out var certOverlapPages, "certidao");
             if (despachoMatch != null)
             {
-                var despachoFields = ConvertDespachoFields(despachoMatch);
+                var despachoFields = ConvertDespachoFields(despachoMatch, "despacho_extractor");
                 if (despachoFields.Count > 0)
+                {
+                    // add after script extraction
+                }
+            }
+            if (certidaoMatch != null)
+            {
+                var certidaoFields = ConvertDespachoFields(certidaoMatch, "certidao_extractor");
+                if (certidaoFields.Count > 0)
                 {
                     // add after script extraction
                 }
             }
             var labelIsDespacho = docLabel.Contains("despacho", StringComparison.OrdinalIgnoreCase) ||
                                   docType.Contains("despacho", StringComparison.OrdinalIgnoreCase);
-            var isDespacho = labelIsDespacho || despachoMatch != null;
+            var labelIsCertidao = docLabel.Contains("certidao", StringComparison.OrdinalIgnoreCase) ||
+                                  docLabel.Contains("certidão", StringComparison.OrdinalIgnoreCase) ||
+                                  docType.Contains("certidao", StringComparison.OrdinalIgnoreCase) ||
+                                  docType.Contains("certidão", StringComparison.OrdinalIgnoreCase);
+            var attachDespacho = despachoMatch != null && (labelIsDespacho || overlapRatio >= 0.5);
+            var attachCertidao = certidaoMatch != null && (labelIsCertidao || certOverlapRatio >= 0.5);
+            var isDespacho = labelIsDespacho || attachDespacho;
+            var isCertidao = labelIsCertidao || attachCertidao;
             var forcedBucket = isDespacho ? "principal" : null;
             var extractedFields = ExtractFields(docText, wordsWithCoords, d, pdfPath, scripts, forcedBucket);
-            if (despachoMatch != null)
+            if (attachDespacho)
             {
-                var despachoFields = ConvertDespachoFields(despachoMatch);
+                var despachoFields = ConvertDespachoFields(despachoMatch, "despacho_extractor");
                 if (despachoFields.Count > 0)
                     extractedFields.AddRange(despachoFields);
+            }
+            if (attachCertidao)
+            {
+                var certidaoFields = ConvertDespachoFields(certidaoMatch, "certidao_extractor");
+                if (certidaoFields.Count > 0)
+                    extractedFields.AddRange(certidaoFields);
             }
             AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage);
             var forensics = BuildForensics(d, analysis, docText, wordsWithCoords);
@@ -428,9 +450,13 @@ namespace FilterPDF.Commands
                 ["doc_label"] = docLabel,
                 ["doc_type"] = docType,
                 ["is_despacho"] = isDespacho,
+                ["is_certidao"] = isCertidao,
                 ["despacho_overlap_ratio"] = despachoMatch != null ? overlapRatio : 0.0,
                 ["despacho_overlap_pages"] = despachoMatch != null ? overlapPages : 0,
                 ["despacho_match_score"] = despachoMatch != null ? despachoMatch.MatchScore : 0.0,
+                ["certidao_overlap_ratio"] = certidaoMatch != null ? certOverlapRatio : 0.0,
+                ["certidao_overlap_pages"] = certidaoMatch != null ? certOverlapPages : 0,
+                ["certidao_match_score"] = certidaoMatch != null ? certidaoMatch.MatchScore : 0.0,
                 ["despacho_tipo"] = isDespacho ? despachoInfo.Tipo : "-",
                 ["despacho_categoria"] = isDespacho ? despachoInfo.Categoria : "-",
                 ["despacho_destino"] = isDespacho ? despachoInfo.Destino : "-",
@@ -460,7 +486,8 @@ namespace FilterPDF.Commands
                 ["anexos_bookmarks"] = anexos,
                 ["doc_summary"] = docSummary,
                 ["fields"] = extractedFields,
-                ["despacho_extraction"] = despachoMatch,
+                ["despacho_extraction"] = attachDespacho ? despachoMatch : null,
+                ["certidao_extraction"] = attachCertidao ? certidaoMatch : null,
                 ["forensics"] = forensics
             };
         }
@@ -1589,7 +1616,7 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             return firstLine.Length > 80 ? firstLine.Substring(0, 80) + "..." : firstLine;
         }
 
-        private DespachoDocumentInfo? FindBestDespachoMatch(DocumentBoundary d, ExtractionResult? result, out double overlapRatio, out int overlapPages)
+        private DespachoDocumentInfo? FindBestDespachoMatch(DocumentBoundary d, ExtractionResult? result, out double overlapRatio, out int overlapPages, string? docTypeContains = null)
         {
             overlapRatio = 0.0;
             overlapPages = 0;
@@ -1598,6 +1625,12 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             DespachoDocumentInfo? best = null;
             foreach (var doc in result.Documents)
             {
+                if (!string.IsNullOrWhiteSpace(docTypeContains))
+                {
+                    var dtype = doc.DocType ?? "";
+                    if (dtype.IndexOf(docTypeContains, StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+                }
                 var interStart = Math.Max(d.StartPage, doc.StartPage1);
                 var interEnd = Math.Min(d.EndPage, doc.EndPage1);
                 var inter = interEnd - interStart + 1;
@@ -1624,7 +1657,7 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             return null;
         }
 
-        private List<Dictionary<string, object>> ConvertDespachoFields(DespachoDocumentInfo doc)
+        private List<Dictionary<string, object>> ConvertDespachoFields(DespachoDocumentInfo doc, string source)
         {
             var list = new List<Dictionary<string, object>>();
             if (doc?.Fields == null) return list;
@@ -1642,7 +1675,7 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
                     ["page"] = ev?.Page1 ?? 0,
                     ["snippet"] = ev?.Snippet ?? "",
                     ["bboxN"] = ev?.BBoxN,
-                    ["source"] = "despacho_extractor"
+                    ["source"] = source
                 });
             }
             return list;

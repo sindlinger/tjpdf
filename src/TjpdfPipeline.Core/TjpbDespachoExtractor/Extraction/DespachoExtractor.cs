@@ -28,6 +28,10 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
     {
         private readonly TjpbDespachoConfig _cfg;
         private readonly diff_match_patch _dmp;
+        private static readonly HashSet<string> CertidaoFieldWhitelist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "VALOR_ARBITRADO_CM","ADIANTAMENTO","PERCENTUAL","PARCELA","DATA"
+        };
 
         public DespachoExtractor(TjpbDespachoConfig cfg)
         {
@@ -131,25 +135,36 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                 return result;
             }
 
-            var regions = BuildTemplateRegions(analysis, range.startPage1, range.endPage1);
+            var despachoRegions = BuildTemplateRegions(analysis, range.startPage1, range.endPage1);
+            var certidaoRegions = new List<RegionSegment>();
             var certidaoPage1 = CertidaoExtraction.FindCertidaoPage(analysis, _cfg);
             if (certidaoPage1 > 0)
             {
-                var certRegions = CertidaoExtraction.BuildCertidaoRegions(analysis, certidaoPage1, _cfg);
-                if (certRegions.Count > 0)
-                    regions.AddRange(certRegions);
+                certidaoRegions = CertidaoExtraction.BuildCertidaoRegions(analysis, certidaoPage1, _cfg);
                 Log(result, logFn, "info", "certidao_found", new Dictionary<string, object>
                 {
                     { "page1", certidaoPage1 },
-                    { "regions", certRegions.Count }
+                    { "regions", certidaoRegions.Count }
                 });
             }
             if (options.Verbose || options.Dump)
             {
-                foreach (var r in regions)
+                foreach (var r in despachoRegions)
                 {
                     Log(result, logFn, "info", "region_text", new Dictionary<string, object>
                     {
+                        { "docType", "despacho" },
+                        { "name", r.Name },
+                        { "page1", r.Page1 },
+                        { "bboxN", r.BBox },
+                        { "text", Truncate(r.Text, 2000) }
+                    });
+                }
+                foreach (var r in certidaoRegions)
+                {
+                    Log(result, logFn, "info", "region_text", new Dictionary<string, object>
+                    {
+                        { "docType", "certidao_cm" },
                         { "name", r.Name },
                         { "page1", r.Page1 },
                         { "bboxN", r.BBox },
@@ -158,11 +173,24 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                 }
             }
 
-            var doc = BuildDocument(analysis, range.startPage1, range.endPage1, best.score, regions,
-                options.ProcessNumber ?? "", options.FooterSigners, options.FooterSignatureRaw);
+            var doc = BuildDocument(analysis, range.startPage1, range.endPage1, best.score, despachoRegions,
+                options.ProcessNumber ?? "", options.FooterSigners, options.FooterSignatureRaw, "despacho");
             result.Documents.Add(doc);
 
-            LogVariationSnippets(result, logFn, regions);
+            if (certidaoRegions.Count > 0)
+            {
+                var certDoc = BuildDocument(analysis, certidaoPage1, certidaoPage1, 1.0, certidaoRegions,
+                    options.ProcessNumber ?? "", options.FooterSigners, options.FooterSignatureRaw, "certidao_cm",
+                    fieldWhitelist: CertidaoFieldWhitelist, includeProcessWarnings: false);
+                result.Documents.Add(certDoc);
+                Log(result, logFn, "info", "certidao_document_built", new Dictionary<string, object>
+                {
+                    { "page1", certidaoPage1 },
+                    { "docType", "certidao_cm" }
+                });
+            }
+
+            LogVariationSnippets(result, logFn, despachoRegions);
 
             result.Run.FinishedAt = DateTime.UtcNow.ToString("o");
             return result;
@@ -228,11 +256,12 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
         }
 
         private DespachoDocumentInfo BuildDocument(PDFAnalysisResult analysis, int startPage1, int endPage1, double matchScore,
-            List<RegionSegment> regions, string processNumber, List<string> footerSigners, string? footerSignatureRaw)
+            List<RegionSegment> regions, string processNumber, List<string> footerSigners, string? footerSignatureRaw,
+            string docType, ISet<string>? fieldWhitelist = null, bool includeProcessWarnings = true)
         {
             var doc = new DespachoDocumentInfo
             {
-                DocType = "despacho",
+                DocType = docType,
                 StartPage1 = startPage1,
                 EndPage1 = endPage1,
                 MatchScore = matchScore
@@ -384,13 +413,45 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
 
             var fieldExtractor = new FieldExtractor(_cfg);
             doc.Fields = fieldExtractor.ExtractAll(ctx);
+            if (fieldWhitelist != null && fieldWhitelist.Count > 0)
+                doc.Fields = FilterFields(doc.Fields, fieldWhitelist);
 
             var warnings = new List<string>();
-            if (doc.Fields["PROCESSO_ADMINISTRATIVO"].Method == "not_found" && doc.Fields["PROCESSO_JUDICIAL"].Method == "not_found")
-                warnings.Add("missing_process_numbers");
+            if (includeProcessWarnings)
+            {
+                if (doc.Fields.TryGetValue("PROCESSO_ADMINISTRATIVO", out var procAdmin) &&
+                    doc.Fields.TryGetValue("PROCESSO_JUDICIAL", out var procJud))
+                {
+                    if (procAdmin.Method == "not_found" && procJud.Method == "not_found")
+                        warnings.Add("missing_process_numbers");
+                }
+            }
             doc.Warnings = warnings;
 
             return doc;
+        }
+
+        private Dictionary<string, FieldInfo> FilterFields(Dictionary<string, FieldInfo> fields, ISet<string> whitelist)
+        {
+            var filtered = new Dictionary<string, FieldInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in whitelist)
+            {
+                if (fields != null && fields.TryGetValue(key, out var info) && info != null)
+                {
+                    filtered[key] = info;
+                }
+                else
+                {
+                    filtered[key] = new FieldInfo
+                    {
+                        Value = "-",
+                        Confidence = 0.0,
+                        Method = "not_found",
+                        Evidence = null
+                    };
+                }
+            }
+            return filtered;
         }
 
         private ParagraphSegment? SelectParagraphByHints(List<ParagraphSegment> paras, List<string> hints, Regex? primaryRegex = null)
