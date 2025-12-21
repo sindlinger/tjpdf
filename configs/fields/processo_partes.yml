@@ -3,6 +3,7 @@ priority: 1.3
 sources:
   - bucket: principal
     name_matches: ["*Despacho*.html", "*Despacho*.pdf", "*Decisao*", "*Decisão*", "*Senten*"]
+  - bucket: principal
   - bucket: apoio
     name_matches: ["*Despacho*", "*Senten*", "*Decis*"]
 patterns:

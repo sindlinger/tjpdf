@@ -944,6 +944,7 @@ namespace FilterPDF.Commands
             var party = ExtractPartyInfo(fullText);
             var partyBBoxes = ExtractPartyBBoxes(paras, d.StartPage, d.EndPage);
             var procInfo = ExtractProcessInfo(paras, sei.Process);
+            var cnj = ExtractProcessCnj(fullText, procInfo.ProcessNumber, procInfo.ProcessLine);
 
             return new Dictionary<string, object>
             {
@@ -957,6 +958,7 @@ namespace FilterPDF.Commands
                 ["template"] = template,
                 ["footer_signature_raw"] = footerSignatureRaw,
                 ["sei_process"] = string.IsNullOrWhiteSpace(sei.Process) ? procInfo.ProcessNumber : sei.Process,
+                ["process_cnj"] = cnj,
                 ["sei_doc"] = sei.DocNumber,
                 ["sei_crc"] = sei.CRC,
                 ["sei_verifier"] = sei.Verifier,
@@ -974,6 +976,17 @@ namespace FilterPDF.Commands
                 ["interested_bbox"] = partyBBoxes.InterestedBBox,
                 ["juizo_bbox"] = partyBBoxes.JuizoBBox
             };
+        }
+
+        private string ExtractProcessCnj(string fullText, string processNumber, string processLine)
+        {
+            var m = CnjRegex.Match(fullText ?? "");
+            if (m.Success) return m.Value;
+            if (!string.IsNullOrWhiteSpace(processNumber) && CnjRegex.IsMatch(processNumber))
+                return CnjRegex.Match(processNumber).Value;
+            if (!string.IsNullOrWhiteSpace(processLine) && CnjRegex.IsMatch(processLine))
+                return CnjRegex.Match(processLine).Value;
+            return "";
         }
 
         private (string InterestedLine, string InterestedName, string InterestedProfession, string InterestedEmail, string JuizoLine, string JuizoVara, string Comarca) ExtractPartyInfo(string fullText)
@@ -1004,9 +1017,10 @@ namespace FilterPDF.Commands
                 }
             }
 
-            foreach (var line in lines)
+            for (int i = 0; i < lines.Count; i++)
             {
-                var m = Regex.Match(line, @"^(ju[ií]zo|vara).*", RegexOptions.IgnoreCase);
+                var line = lines[i];
+                var m = Regex.Match(line, @"\b(ju[ií]zo|vara)\b", RegexOptions.IgnoreCase);
                 if (m.Success)
                 {
                     juizoLine = line;
@@ -1014,6 +1028,28 @@ namespace FilterPDF.Commands
                     if (vm.Success) juizoVara = vm.Groups[2].Value.Trim();
                     var cm = Regex.Match(line, @"comarca\s+de\s+([^,\-]+)", RegexOptions.IgnoreCase);
                     if (cm.Success) comarca = cm.Groups[1].Value.Trim();
+                    if (string.IsNullOrWhiteSpace(comarca) && Regex.IsMatch(line, @"comarca\s+de\s*$", RegexOptions.IgnoreCase))
+                    {
+                        var next = (i + 1) < lines.Count ? lines[i + 1].Trim() : "";
+                        if (!string.IsNullOrWhiteSpace(next))
+                            comarca = next;
+                    }
+                    if (!string.IsNullOrWhiteSpace(juizoVara) && Regex.IsMatch(juizoVara, @"comarca\s+de", RegexOptions.IgnoreCase))
+                    {
+                        var cut = Regex.Split(juizoVara, @"(?i)comarca\s+de").FirstOrDefault();
+                        if (!string.IsNullOrWhiteSpace(cut))
+                            juizoVara = cut.Trim().TrimEnd('-', ',', '.');
+                    }
+                    if (string.IsNullOrWhiteSpace(comarca) && !string.IsNullOrWhiteSpace(juizoVara) &&
+                        Regex.IsMatch(juizoVara, @"comarca\s+de", RegexOptions.IgnoreCase))
+                    {
+                        var parts = Regex.Split(juizoVara, @"(?i)comarca\s+de");
+                        if (parts.Length >= 2)
+                        {
+                            juizoVara = parts[0].Trim().TrimEnd('-', ',', '.');
+                            comarca = parts[1].Trim().TrimEnd('-', ',', '.');
+                        }
+                    }
                     break;
                 }
             }
@@ -2040,6 +2076,7 @@ namespace FilterPDF.Commands
             }
 
             AddFieldIfMissing(fields, "PROCESSO_ADMINISTRATIVO", GetStr("sei_process"), "doc_meta", 0.55, page, words);
+            AddFieldIfMissing(fields, "PROCESSO_JUDICIAL", GetStr("process_cnj"), "doc_meta", 0.55, page, words);
             AddFieldIfMissing(fields, "VARA", GetStr("juizo_vara"), "doc_meta", 0.55, page, words);
             AddFieldIfMissing(fields, "COMARCA", GetStr("comarca"), "doc_meta", 0.55, page, words);
             AddFieldIfMissing(fields, "PERITO", GetStr("interested_name"), "doc_meta", 0.50, page, words);
@@ -2594,6 +2631,9 @@ namespace FilterPDF.Commands
         private string NormalizeComarca(string val)
         {
             val = (val ?? "").Replace("Comarca de", "", StringComparison.OrdinalIgnoreCase);
+            val = Regex.Split(val, @"(?i)\b(assunto|processo|referência|referencia|parte)\b").FirstOrDefault() ?? val;
+            val = Regex.Replace(val, @"\b([A-Za-zÀ-ÿ])\s+(?=[A-Za-zÀ-ÿ]\b)", "$1");
+            val = val.Trim().TrimEnd('.', ',', ';', '-');
             return NormalizeTitle(val);
         }
 
@@ -2631,6 +2671,8 @@ namespace FilterPDF.Commands
                 val = Regex.Replace(val, @"(?i)perante o ju[ií]zo\s+de\s+", "");
                 val = Regex.Replace(val, @"(?i)nos autos\s+do\s+processo.*", "");
                 val = Regex.Replace(val, @"\s+", " ").Trim();
+                if (f == "VARA")
+                    val = Regex.Replace(val, @"\s+\b(da|do|de)$", "", RegexOptions.IgnoreCase).Trim();
             }
 
             return val;

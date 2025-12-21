@@ -21,6 +21,7 @@ dotnet run --project /mnt/c/git/tjpdf/src/TjpdfPipeline.Cli -- fetch-bookmark-ti
 
 - `/mnt/c/git/tjpdf/configs/config.yaml` (principal)
 - `/mnt/c/git/tjpdf/configs/fields/*.yml` (regras por campo)
+- Changelog oficial: `/mnt/c/git/tjpdf/docs/CHANGELOG_PIPELINE_TJPB.md`
 
 ## Saída
 

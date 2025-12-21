@@ -3,6 +3,7 @@ priority: 1.15
 sources:
   - bucket: principal
     name_matches: ["*Despacho*.html", "*Despacho*.pdf", "*Autorizacao*", "*Autorização*"]
+  - bucket: principal
   - bucket: laudo
 patterns:
   - type: regex
