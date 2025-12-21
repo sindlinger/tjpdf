@@ -53,6 +53,7 @@ namespace FilterPDF.Commands
             string? signerContains = null;
             bool debugDocSummary = false;
             bool fieldsOnly = false;
+            bool printJson = false;
             string pgUri = FilterPDF.Utils.PgDocStore.DefaultPgUri;
             string configPath = Path.Combine("configs", "config.yaml");
             var analysesByProcess = new Dictionary<string, PDFAnalysisResult>();
@@ -93,6 +94,7 @@ namespace FilterPDF.Commands
                 if (args[i] == "--config" && i + 1 < args.Length) configPath = args[i + 1];
                 if (args[i] == "--debug-docsummary") debugDocSummary = true;
                 if (args[i] == "--fields-only") fieldsOnly = true;
+                if (args[i] == "--print-json") printJson = true;
             }
 
             try
@@ -321,6 +323,33 @@ namespace FilterPDF.Commands
                     return;
                 }
 
+                if (printJson)
+                {
+                    var outputs = new List<object>();
+                    foreach (var grp in grouped)
+                    {
+                        var procName = grp.process;
+                        var firstDoc = grp.documents.FirstOrDefault();
+                        var sourcePath = firstDoc != null && firstDoc.TryGetValue("pdf_path", out var pp) ? pp?.ToString() ?? procName : procName;
+                        var analysis = analysesByProcess.TryGetValue(procName, out var an) ? an : new PDFAnalysisResult();
+                        var pdfMeta = pdfMetaByProcess.TryGetValue(procName, out var meta) ? meta : new Dictionary<string, object>
+                        {
+                            ["fileName"] = Path.GetFileName(sourcePath ?? ""),
+                            ["filePath"] = sourcePath ?? "",
+                            ["pages"] = analysis.DocumentInfo.TotalPages,
+                            ["sha256"] = "",
+                            ["fileSize"] = 0L
+                        };
+                        var payload = new { process = procName, pdf = pdfMeta, documents = grp.documents, paragraph_stats = paragraphStats };
+                        outputs.Add(payload);
+                    }
+                    if (outputs.Count == 1)
+                        Console.WriteLine(JsonConvert.SerializeObject(outputs[0], Formatting.Indented));
+                    else
+                        Console.WriteLine(JsonConvert.SerializeObject(outputs, Formatting.Indented));
+                    return;
+                }
+
                 // Persistir por processo no Postgres (tabelas processes + documents)
                 foreach (var grp in grouped)
                 {
@@ -379,6 +408,7 @@ namespace FilterPDF.Commands
             Console.WriteLine("--signer-contains: filtra documentos cujo signer contenha o texto informado (case-insensitive).");
             Console.WriteLine("--debug-docsummary: imprime header/footer + campos de cabeçalho/assinatura por documento e não grava no Postgres.");
             Console.WriteLine("--fields-only: imprime apenas os fields principais (JSON) e não grava no Postgres.");
+            Console.WriteLine("--print-json: imprime o JSON completo (por processo) e não grava no Postgres.");
         }
 
         private void EnsureReferenceCaches()
@@ -724,6 +754,7 @@ namespace FilterPDF.Commands
                 extractedFields = MergeFields(extractedFields, directedFields);
             AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage, wordsWithCoords);
             var normalizedFields = NormalizeAndValidateFields(extractedFields);
+            var missingFields = EnsureRequiredFields(normalizedFields);
             var forensics = BuildForensics(d, analysis, docText, wordsWithCoords);
             var despachoInfo = DetectDespachoTipo(docText, lastTwoText);
             var isDespachoValid = isDespacho && d.PageCount >= 2 && MatchesOrigin(docSummary, "despacho") && MatchesSigner(docSummary);
@@ -787,6 +818,7 @@ namespace FilterPDF.Commands
                 ["bookmarks"] = docBookmarks,
                 ["anexos_bookmarks"] = anexos,
                 ["fields"] = normalizedFields,
+                ["fields_missing"] = missingFields,
                 ["band_fields"] = bandFields,
                 ["despacho_extraction"] = attachDespacho ? despachoMatch : null,
                 ["certidao_extraction"] = attachCertidao ? certidaoMatch : null,
@@ -2378,6 +2410,44 @@ namespace FilterPDF.Commands
             }
 
             return dedup;
+        }
+
+        private static readonly string[] RequiredFieldNames = new[]
+        {
+            "PROCESSO_ADMINISTRATIVO",
+            "PROCESSO_JUDICIAL",
+            "PERITO",
+            "CPF_PERITO",
+            "ESPECIALIDADE",
+            "ESPECIE_DA_PERICIA",
+            "VALOR_ARBITRADO_JZ",
+            "VALOR_ARBITRADO_DE",
+            "VALOR_ARBITRADO_CM",
+            "COMARCA",
+            "VARA"
+        };
+
+        private List<string> EnsureRequiredFields(List<Dictionary<string, object>> fields)
+        {
+            var missing = new List<string>();
+            var existing = new HashSet<string>(fields.Select(f => f.GetValueOrDefault("name")?.ToString() ?? ""), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var name in RequiredFieldNames)
+            {
+                if (existing.Contains(name)) continue;
+                missing.Add(name);
+                fields.Add(new Dictionary<string, object>
+                {
+                    ["name"] = name,
+                    ["value"] = "",
+                    ["method"] = "missing_required",
+                    ["weight"] = 0.0,
+                    ["page"] = 0,
+                    ["bbox"] = null
+                });
+            }
+
+            return missing;
         }
 
         private string NormalizeFieldNameForPipeline(string field)
