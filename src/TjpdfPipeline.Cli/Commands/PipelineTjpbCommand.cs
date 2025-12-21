@@ -667,7 +667,13 @@ namespace FilterPDF.Commands
 
         private List<object> BuildParagraphStats(List<List<Dictionary<string, object>>> allDocsWords)
         {
+            if (allDocsWords == null || allDocsWords.Count == 0)
+                return new List<object>();
+
             var paragraphsPerDoc = allDocsWords.Select(BuildParagraphsFromWords).ToList();
+            if (paragraphsPerDoc.Count == 0)
+                return new List<object>();
+
             int maxPars = paragraphsPerDoc.Max(p => p.Length);
             var stats = new List<object>();
 
