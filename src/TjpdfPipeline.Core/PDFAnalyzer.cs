@@ -304,6 +304,28 @@ namespace FilterPDF
                 if (avgChar <= 0) avgChar = ordered.Average(w => w.X1 - w.X0);
                 if (avgChar <= 0) avgChar = 1.0;
 
+                int singleCount = ordered.Count(w => (w.Text ?? "").Trim().Length == 1);
+                double singleRatio = ordered.Count > 0 ? (double)singleCount / ordered.Count : 0.0;
+                double minGapForSpace = 0.0;
+                if (singleRatio >= 0.6 && avgChar > 0 && ordered.Count > 2)
+                {
+                    var ratios = new List<double>();
+                    for (int i = 1; i < ordered.Count; i++)
+                    {
+                        double gap = ordered[i].X0 - ordered[i - 1].X1;
+                        if (gap > 0) ratios.Add(gap / avgChar);
+                    }
+                    if (ratios.Count > 0)
+                    {
+                        ratios.Sort();
+                        double med = ratios[ratios.Count / 2];
+                        double dynamic = med * 4.0;
+                        if (dynamic < 0.02) dynamic = 0.02;
+                        if (dynamic > 1.2) dynamic = 1.2;
+                        minGapForSpace = dynamic * avgChar;
+                    }
+                }
+
                 var lineText = new System.Text.StringBuilder();
                 WordInfo prev = null;
                 foreach (var w in ordered)
@@ -313,10 +335,13 @@ namespace FilterPDF
                         double gap = w.X0 - prev.X1;
                         if (gap > 0)
                         {
-                            int spaces = (int)Math.Round(gap / avgChar);
-                            if (spaces < 1) spaces = 1;
-                            if (spaces > 40) spaces = 40;
-                            lineText.Append(' ', spaces);
+                            if (minGapForSpace <= 0 || gap >= minGapForSpace)
+                            {
+                                int spaces = (int)Math.Round(gap / avgChar);
+                                if (spaces < 1) spaces = 1;
+                                if (spaces > 40) spaces = 40;
+                                lineText.Append(' ', spaces);
+                            }
                         }
                     }
                     lineText.Append(w.Text);
@@ -325,6 +350,8 @@ namespace FilterPDF
 
                 var rendered = lineText.ToString().TrimEnd();
                 if (rendered.Length == 0) continue;
+                if (singleRatio >= 0.6)
+                    rendered = FilterPDF.TjpbDespachoExtractor.Utils.TextUtils.CollapseSpacedLettersText(rendered);
                 if (sb.Length > 0) sb.Append('\n');
                 sb.Append(rendered);
             }
