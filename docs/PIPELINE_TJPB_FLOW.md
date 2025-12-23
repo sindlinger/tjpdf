@@ -1,6 +1,6 @@
 # Fluxo Detalhado do Pipeline TJPB (TJPDF)
 
-Atualizado em: **2025-12-23 12:29:13 -03**
+Atualizado em: **2025-12-23 12:46:06 -03**
 
 Este documento descreve **o caminho completo** dos arquivos e a execução do pipeline **desde a ingestão**, até a geração do JSON e a persistência no Postgres. O objetivo é servir como referência única para o time (e para agentes) sobre **como o pipeline realmente opera** hoje.
 
@@ -122,7 +122,7 @@ Padronizar a entrada em **uma pasta por processo** contendo **um único PDF** (m
 - JSON estruturado **por PDF** (`PDFAnalysisResult`) com:
   - texto/words/coords/linhas
   - headers/footers
-  - bookmarks (outline tree + flatten, com fallback /Outlines)
+  - bookmarks (extração unificada via `BookmarkExtractor`)
   - metadados e assinaturas  
 - Este é o **RAW genérico** que alimenta todas as etapas específicas.
 
@@ -137,7 +137,7 @@ Padronizar a entrada em **uma pasta por processo** contendo **um único PDF** (m
 
 **Notas importantes (qualidade do RAW)**  
 - O texto é **tabulado/espaciado** usando words/coords (métrica de gaps) para evitar “texto colado”.  
-- Bookmarks usam **extração principal + fallback /Outlines** (mesma ideia do fetch-bookmark-titles).
+- Bookmarks usam o **BookmarkExtractor** (mesma lógica do comando `fetch-bookmark-titles`): Outlines API + fallback `/Outlines` e resolução por **/Dest, /A e NameTree (/Dests, /Names)**.
 
 **O que o analyzer produz** (estrutura `PDFAnalysisResult`):
 - Metadados (`Metadata`, `XMPMetadata`)

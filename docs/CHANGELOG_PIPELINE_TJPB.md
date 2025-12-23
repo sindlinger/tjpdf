@@ -44,5 +44,5 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 - `pipeline-tjpb`: nova opção `--export-csv` para gerar CSV consolidado por processo (campos principais).
 - CSV (campos principais): adicionados **PROMOVENTE/PROMOVIDO** e regra de **VALOR_ARBITRADO_FINAL/DATA_ARBITRADO_FINAL** (não é soma).
 - Comandos de etapa adicionados: `tjpb-s1` e `tjpb-s3` (validação progressiva por etapa).
-- PDFAnalyzer: bookmarks agora têm fallback por `/Outlines` (mesma lógica do fetch-bookmark-titles).
+- PDFAnalyzer + fetch-bookmark-titles: agora compartilham `BookmarkExtractor` (Outlines + fallback `/Outlines` + NameTree).
 - PDFAnalyzer: texto tabulado mantém fallback para texto extraído (não zera quando a tabulação falha).

@@ -966,29 +966,15 @@ namespace FilterPDF
             var b = new BookmarkStructure();
             try
             {
-                var root = doc?.GetOutlines(false);
-                if (root != null)
+                var items = BookmarkExtractor.Extract(doc);
+                if (items != null && items.Count > 0)
                 {
-                    b.RootItems = ConvertOutline(root);
+                    b.RootItems = items;
                     b.TotalCount = CountBookmarks(b.RootItems);
                     b.MaxDepth = CalculateMaxDepth(b.RootItems);
                 }
             }
             catch { }
-            if (b.RootItems == null || b.RootItems.Count == 0)
-            {
-                try
-                {
-                    var fallback = ExtractBookmarksFromOutlinesDict();
-                    if (fallback.Count > 0)
-                    {
-                        b.RootItems = fallback;
-                        b.TotalCount = CountBookmarks(b.RootItems);
-                        b.MaxDepth = CalculateMaxDepth(b.RootItems);
-                    }
-                }
-                catch { }
-            }
             return b;
         }
 
