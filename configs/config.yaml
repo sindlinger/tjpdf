@@ -9,6 +9,8 @@ reference:
   peritos_catalog_paths:
     - "src/PipelineTjpb/reference/peritos/peritos_catalogo_relatorio.csv"
     - "src/PipelineTjpb/reference/peritos/peritos_catalogo_final.csv"
+    - "src/PipelineTjpb/reference/peritos/peritos_catalogo.csv"
+    - "src/PipelineTjpb/reference/peritos/peritos_catalogo_parquet.csv"
   honorarios:
     table_path: "src/PipelineTjpb/reference/valores/tabela_honorarios.csv"
     aliases_path: "src/PipelineTjpb/reference/valores/honorarios_aliases.json"
@@ -57,7 +59,7 @@ reference:
           - "avaliacao comercial"
 
 thresholds:
-  densityMin: 0.20
+  densityMin: 0.15
   minPages: 2
   maxPages: 6
   bands:
@@ -94,8 +96,6 @@ anchors:
 
 despacho_type:
   autorizacao_hints:
-    - "AUTORIZADO"
-    - "AUTORIZA"
     - "AUTORIZACAO"
     - "ENCAMINHEM-SE OS PRESENTES AUTOS"
     - "ENCAMINHE-SE"

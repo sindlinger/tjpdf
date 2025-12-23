@@ -158,6 +158,13 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                         return s;
                 }
             }
+            if (fallback.Method != "not_found")
+            {
+                var fpage = fallback.Evidence?.Page1 ?? 0;
+                if (requiredPage1 > 0 && fpage == requiredPage1)
+                    return fallback;
+                return NotFound();
+            }
             return fallback;
         }
 

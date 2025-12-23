@@ -19,6 +19,19 @@ namespace FilterPDF.TjpbDespachoExtractor.Utils
             return cleaned.Trim();
         }
 
+        public static string FixMissingSpaces(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text ?? "";
+            var t = text;
+            t = Regex.Replace(t, @"(?<=[,:;])(?=\S)", " ");
+            t = Regex.Replace(t, @"(?<=\))(?=\S)", ") ");
+            t = Regex.Replace(t, @"(?<=\S)(?=\()", " ");
+            t = Regex.Replace(t, @"(?<=[A-Za-zÀ-ÿ])(?=[0-9])", " ");
+            t = Regex.Replace(t, @"(?<=[0-9])(?=[A-Za-zÀ-ÿ])", " ");
+            t = Regex.Replace(t, "\\s+", " ");
+            return t.Trim();
+        }
+
         public static string BuildLineText(List<WordInfo> words, double wordGapX)
         {
             if (words == null || words.Count == 0) return "";
@@ -149,27 +162,51 @@ namespace FilterPDF.TjpbDespachoExtractor.Utils
         public static string CollapseSpacedLettersText(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return "";
-            var tokens = Regex.Split(text, "\\s+").Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
-            if (tokens.Count == 0) return "";
-            var output = new List<string>();
+            var parts = Regex.Matches(text, "\\S+|\\s+");
+            if (parts.Count == 0) return "";
+            var sb = new StringBuilder();
             var buffer = new StringBuilder();
-            foreach (var tok in tokens)
+            string pendingWs = "";
+
+            foreach (Match m in parts)
             {
-                if (IsJoinToken(tok))
+                var s = m.Value;
+                if (string.IsNullOrWhiteSpace(s))
                 {
-                    buffer.Append(tok);
+                    pendingWs = s;
                     continue;
                 }
-                if (buffer.Length > 0)
+
+                var token = s;
+                var joinable = IsJoinToken(token);
+                var canJoin = joinable && buffer.Length > 0 && IsTightSpace(pendingWs);
+
+                if (canJoin)
                 {
-                    output.Add(buffer.ToString());
-                    buffer.Clear();
+                    buffer.Append(token);
                 }
-                output.Add(tok);
+                else
+                {
+                    if (buffer.Length > 0)
+                    {
+                        AppendWithSpace(sb, buffer.ToString());
+                        buffer.Clear();
+                    }
+                    if (!string.IsNullOrEmpty(pendingWs))
+                        AppendSpace(sb);
+
+                    if (joinable)
+                        buffer.Append(token);
+                    else
+                        AppendWithSpace(sb, token);
+                }
+                pendingWs = "";
             }
+
             if (buffer.Length > 0)
-                output.Add(buffer.ToString());
-            return string.Join(" ", output).Trim();
+                AppendWithSpace(sb, buffer.ToString());
+
+            return Regex.Replace(sb.ToString(), "\\s+", " ").Trim();
         }
 
         public static List<WordInfo> DeduplicateWords(List<WordInfo> words, int decimals = 3)
@@ -198,6 +235,28 @@ namespace FilterPDF.TjpbDespachoExtractor.Utils
                     return true;
             }
             return false;
+        }
+
+        private static bool IsTightSpace(string ws)
+        {
+            if (string.IsNullOrEmpty(ws)) return false;
+            if (ws.IndexOf('\n') >= 0 || ws.IndexOf('\r') >= 0) return false;
+            return ws.Length == 1 && ws[0] == ' ';
+        }
+
+        private static void AppendSpace(StringBuilder sb)
+        {
+            if (sb.Length == 0) return;
+            if (sb[sb.Length - 1] != ' ')
+                sb.Append(' ');
+        }
+
+        private static void AppendWithSpace(StringBuilder sb, string token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return;
+            if (sb.Length > 0 && sb[sb.Length - 1] != ' ')
+                sb.Append(' ');
+            sb.Append(token);
         }
 
         public static string RemoveDiacritics(string text)

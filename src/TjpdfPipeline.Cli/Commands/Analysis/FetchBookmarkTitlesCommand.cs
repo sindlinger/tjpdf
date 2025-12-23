@@ -106,7 +106,8 @@ namespace FilterPDF.Commands
                 foreach (var n in nodes)
                 {
                     var indent = asTree ? new string(' ', n.Level * 2) : "";
-                    Console.WriteLine($"{indent}{n.Title}");
+                    var page = n.PageNumber > 0 ? $" (p{n.PageNumber})" : "";
+                    Console.WriteLine($"{indent}{n.Title}{page}");
                 }
             }
         }
@@ -115,7 +116,7 @@ namespace FilterPDF.Commands
         {
             Console.WriteLine("tjpdf-cli fetch-bookmark-titles --input-file <pdf> [--json] [--tree]");
             Console.WriteLine("tjpdf-cli fetch-bookmark-titles --input-dir <dir> [--json] [--tree]");
-            Console.WriteLine("Lista títulos de bookmarks com recursão nos nós (Kids).");
+            Console.WriteLine("Lista títulos de bookmarks com recursão nos nós (Kids) e pagina inicial.");
         }
 
         private class BookmarkNode

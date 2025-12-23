@@ -36,6 +36,18 @@ namespace FilterPDF.Commands
     /// </summary>
     public class PipelineTjpbCommand : Command
     {
+        private sealed class ProcessGroup
+        {
+            public string Process { get; }
+            public List<Dictionary<string, object>> Documents { get; }
+
+            public ProcessGroup(string process, List<Dictionary<string, object>> documents)
+            {
+                Process = process;
+                Documents = documents;
+            }
+        }
+
         public override string Name => "pipeline-tjpb";
         public override string Description => "Etapa FPDF do pipeline-tjpb: consolida documentos em JSON";
         private TjpbDespachoConfig? _tjpbCfg;
@@ -43,6 +55,8 @@ namespace FilterPDF.Commands
         private HonorariosTable? _honorariosTable;
         private LaudoHashDb? _laudoHashDb;
         private string _laudoHashDbPath = "";
+        private Dictionary<string, string>? _laudosEspecieByEspecialidade;
+        private string _laudosEspeciePath = "";
 
         public override void Execute(string[] args)
         {
@@ -54,6 +68,7 @@ namespace FilterPDF.Commands
             bool debugDocSummary = false;
             bool fieldsOnly = false;
             bool printJson = false;
+            string? exportCsvPath = null;
             string pgUri = FilterPDF.Utils.PgDocStore.DefaultPgUri;
             string configPath = Path.Combine("configs", "config.yaml");
             var analysesByProcess = new Dictionary<string, PDFAnalysisResult>();
@@ -95,6 +110,18 @@ namespace FilterPDF.Commands
                 if (args[i] == "--debug-docsummary") debugDocSummary = true;
                 if (args[i] == "--fields-only") fieldsOnly = true;
                 if (args[i] == "--print-json") printJson = true;
+                if (args[i] == "--export-csv")
+                {
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.OrdinalIgnoreCase))
+                    {
+                        exportCsvPath = args[i + 1];
+                        i++;
+                    }
+                    else
+                    {
+                        exportCsvPath = Path.Combine(Directory.GetCurrentDirectory(), "tjpb_export.csv");
+                    }
+                }
             }
 
             try
@@ -309,8 +336,11 @@ namespace FilterPDF.Commands
                 var paragraphStats = BuildParagraphStats(docsForStats);
                 var grouped = (filteredDocs.Count > 0 ? filteredDocs : allDocs)
                               .GroupBy(d => d.TryGetValue("process", out var p) ? p?.ToString() ?? "sem_processo" : "sem_processo")
-                              .Select(g => new { process = g.Key, documents = g.ToList() })
+                              .Select(g => new ProcessGroup(g.Key, g.ToList()))
                               .ToList();
+
+                if (!string.IsNullOrWhiteSpace(exportCsvPath))
+                    WriteCsvExport(exportCsvPath, grouped);
 
                 if (fieldsOnly)
                 {
@@ -328,8 +358,8 @@ namespace FilterPDF.Commands
                     var outputs = new List<object>();
                     foreach (var grp in grouped)
                     {
-                        var procName = grp.process;
-                        var firstDoc = grp.documents.FirstOrDefault();
+                        var procName = grp.Process;
+                        var firstDoc = grp.Documents.FirstOrDefault();
                         var sourcePath = firstDoc != null && firstDoc.TryGetValue("pdf_path", out var pp) ? pp?.ToString() ?? procName : procName;
                         var analysis = analysesByProcess.TryGetValue(procName, out var an) ? an : new PDFAnalysisResult();
                         var pdfMeta = pdfMetaByProcess.TryGetValue(procName, out var meta) ? meta : new Dictionary<string, object>
@@ -340,7 +370,7 @@ namespace FilterPDF.Commands
                             ["sha256"] = "",
                             ["fileSize"] = 0L
                         };
-                        var payload = new { process = procName, pdf = pdfMeta, documents = grp.documents, paragraph_stats = paragraphStats };
+                        var payload = new { process = procName, pdf = pdfMeta, documents = grp.Documents, paragraph_stats = paragraphStats };
                         outputs.Add(payload);
                     }
                     if (outputs.Count == 1)
@@ -353,8 +383,8 @@ namespace FilterPDF.Commands
                 // Persistir por processo no Postgres (tabelas processes + documents)
                 foreach (var grp in grouped)
                 {
-                    var procName = grp.process;
-                    var firstDoc = grp.documents.FirstOrDefault();
+                    var procName = grp.Process;
+                    var firstDoc = grp.Documents.FirstOrDefault();
                     var sourcePath = firstDoc != null && firstDoc.TryGetValue("pdf_path", out var pp) ? pp?.ToString() ?? procName : procName;
                     var analysis = analysesByProcess.TryGetValue(procName, out var an) ? an : new PDFAnalysisResult();
                     var pdfMeta = pdfMetaByProcess.TryGetValue(procName, out var meta) ? meta : new Dictionary<string, object>
@@ -365,7 +395,7 @@ namespace FilterPDF.Commands
                         ["sha256"] = "",
                         ["fileSize"] = 0L
                     };
-                    var payload = new { process = procName, pdf = pdfMeta, documents = grp.documents, paragraph_stats = paragraphStats };
+                    var payload = new { process = procName, pdf = pdfMeta, documents = grp.Documents, paragraph_stats = paragraphStats };
                     var tokenProc = JToken.FromObject(payload);
                     foreach (var v in tokenProc.SelectTokens("$..*").OfType<JValue>())
                     {
@@ -409,6 +439,7 @@ namespace FilterPDF.Commands
             Console.WriteLine("--debug-docsummary: imprime header/footer + campos de cabeçalho/assinatura por documento e não grava no Postgres.");
             Console.WriteLine("--fields-only: imprime apenas os fields principais (JSON) e não grava no Postgres.");
             Console.WriteLine("--print-json: imprime o JSON completo (por processo) e não grava no Postgres.");
+            Console.WriteLine("--export-csv [caminho]: gera CSV consolidado por processo (default: ./tjpb_export.csv).");
         }
 
         private void EnsureReferenceCaches()
@@ -461,6 +492,21 @@ namespace FilterPDF.Commands
                     _laudoHashDbPath = "";
                 }
             }
+
+            if (_laudosEspecieByEspecialidade == null)
+            {
+                try
+                {
+                    var map = LoadLaudosEspecieMap(baseDir, out var path);
+                    _laudosEspecieByEspecialidade = map ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    _laudosEspeciePath = path ?? "";
+                }
+                catch
+                {
+                    _laudosEspecieByEspecialidade = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    _laudosEspeciePath = "";
+                }
+            }
         }
 
         private bool ContainsZipFiles(string inputDir)
@@ -473,6 +519,154 @@ namespace FilterPDF.Commands
             {
                 return false;
             }
+        }
+
+        private Dictionary<string, string> LoadLaudosEspecieMap(string baseDir, out string? usedPath)
+        {
+            usedPath = null;
+            var candidates = new[]
+            {
+                Path.Combine(baseDir, "src/PipelineTjpb/reference/laudos/laudos_por_especie_revisado.csv"),
+                Path.Combine(baseDir, "src/PipelineTjpb/reference/laudos/laudos_por_especie_scored.csv"),
+                Path.Combine(baseDir, "src/PipelineTjpb/reference/laudos/laudos_por_especie_classificado.csv"),
+                Path.Combine(baseDir, "src/PipelineTjpb/reference/laudos/laudos_por_especie.csv")
+            };
+
+            var path = candidates.FirstOrDefault(File.Exists);
+            if (string.IsNullOrWhiteSpace(path))
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            usedPath = path;
+            var counts = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+            using var reader = new StreamReader(path);
+            var headerLine = reader.ReadLine();
+            if (string.IsNullOrWhiteSpace(headerLine))
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            var header = ParseCsvLine(headerLine);
+            var headerMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < header.Count; i++)
+            {
+                var key = NormalizeKey(header[i]);
+                if (!headerMap.ContainsKey(key))
+                    headerMap[key] = i;
+            }
+
+            int idxEspecialidade = PickIndex(headerMap, "ESPECIALIDADE");
+            int idxEspecieRev = PickIndex(headerMap, "ESPECIE_REV");
+            int idxEspecieAuto = PickIndex(headerMap, "ESPECIE_AUTO");
+            int idxEspecie = PickIndex(headerMap, "ESPECIE DE PERICIA");
+
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var row = ParseCsvLine(line);
+                string especialidade = GetCol(row, idxEspecialidade);
+                if (string.IsNullOrWhiteSpace(especialidade)) continue;
+
+                string especie = GetCol(row, idxEspecieRev);
+                if (string.IsNullOrWhiteSpace(especie)) especie = GetCol(row, idxEspecieAuto);
+                if (string.IsNullOrWhiteSpace(especie)) especie = GetCol(row, idxEspecie);
+                if (string.IsNullOrWhiteSpace(especie)) continue;
+
+                var key = NormalizeKey(especialidade);
+                var val = NormalizeValue(especie);
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(val)) continue;
+
+                if (!counts.TryGetValue(key, out var map))
+                {
+                    map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    counts[key] = map;
+                }
+                map[val] = map.TryGetValue(val, out var c) ? c + 1 : 1;
+            }
+
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in counts)
+            {
+                var chosen = kv.Value.OrderByDescending(x => x.Value).FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(chosen.Key))
+                    result[kv.Key] = chosen.Key;
+            }
+            return result;
+        }
+
+        private static List<string> ParseCsvLine(string line)
+        {
+            var result = new List<string>();
+            if (line == null) return result;
+            var sb = new StringBuilder();
+            bool inQuotes = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (inQuotes)
+                {
+                    if (c == '"')
+                    {
+                        if (i + 1 < line.Length && line[i + 1] == '"')
+                        {
+                            sb.Append('"');
+                            i++;
+                        }
+                        else
+                        {
+                            inQuotes = false;
+                        }
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                }
+                else
+                {
+                    if (c == '"')
+                    {
+                        inQuotes = true;
+                    }
+                    else if (c == ',')
+                    {
+                        result.Add(sb.ToString());
+                        sb.Clear();
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                }
+            }
+            result.Add(sb.ToString());
+            return result;
+        }
+
+        private int PickIndex(Dictionary<string, int> headerMap, string key)
+        {
+            var norm = NormalizeKey(key);
+            return headerMap.TryGetValue(norm, out var idx) ? idx : -1;
+        }
+
+        private static string GetCol(List<string> row, int idx)
+        {
+            if (idx < 0 || idx >= row.Count) return "";
+            return row[idx]?.Trim() ?? "";
+        }
+
+        private string NormalizeKey(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var t = RemoveDiacritics(text).ToUpperInvariant();
+            t = Regex.Replace(t, @"\s+", " ").Trim();
+            return t;
+        }
+
+        private string NormalizeValue(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var t = text.Trim();
+            t = Regex.Replace(t, @"\s+", " ");
+            return t;
         }
 
         private bool PreprocessZipInbox(string inputDir, string outDir)
@@ -575,8 +769,6 @@ namespace FilterPDF.Commands
                 var prev = analysis.Pages[Math.Max(0, d.EndPage - 2)].TextInfo.PageText ?? "";
                 lastTwoText = $"{prev}\n{lastPageText}";
             }
-            var footerSignatureRaw = ExtractFooterSignatureRaw(lastPageText);
-
             var fonts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int p = d.StartPage; p <= d.EndPage; p++)
                 foreach (var f in analysis.Pages[p - 1].TextInfo.Fonts)
@@ -645,6 +837,34 @@ namespace FilterPDF.Commands
                     footerLines.AddRange(page.TextInfo.Footers);
             }
 
+            var headerCfg = _tjpbCfg ?? new TjpbDespachoConfig();
+            var headerTopPct = headerCfg.Thresholds?.Bands?.HeaderTopPct ?? 0.15;
+            var footerBandPct = Math.Max(0.30, headerCfg.Thresholds?.Bands?.FooterBottomPct ?? 0.15);
+            var footerSignatureRaw = ExtractFooterSignatureRaw(lastPageText);
+            var footerSignatureFromWords = ExtractFooterSignatureRawFromWords(wordsWithCoords, d.EndPage, footerBandPct);
+            footerSignatureRaw = PickBestFooterSignatureRaw(footerSignatureRaw, footerSignatureFromWords);
+            if (string.IsNullOrWhiteSpace(header))
+            {
+                var firstPage = analysis.Pages[d.StartPage - 1];
+                header = ExtractHeaderFromLines(firstPage.TextInfo.Lines, headerTopPct);
+                if (string.IsNullOrWhiteSpace(header))
+                    header = ExtractHeaderFromWords(wordsWithCoords, d.StartPage, headerTopPct);
+                if (string.IsNullOrWhiteSpace(header))
+                    header = ExtractHeaderFromText(firstPage.TextInfo.PageText);
+            }
+
+            string subHeader = "";
+            var headerMeta = ExtractHeaderAndSubheader(wordsWithCoords, d.StartPage, headerTopPct);
+            if (!string.IsNullOrWhiteSpace(headerMeta.Header))
+            {
+                var headerLines = headerMeta.Header.Split('\n').Length;
+                var headerKey = NormalizeHeaderKey(headerMeta.Header);
+                if (headerLines >= 2 || headerKey.Contains("PODERJUDICIARIO") || headerKey.Contains("TRIBUNALDEJUSTICA"))
+                    header = headerMeta.Header;
+            }
+            if (!string.IsNullOrWhiteSpace(headerMeta.Subheader))
+                subHeader = headerMeta.Subheader;
+
             string footerLabel = footerLines
                 .GroupBy(x => x)
                 .OrderByDescending(g => g.Count())
@@ -680,7 +900,15 @@ namespace FilterPDF.Commands
                 }
             }
 
-            var docSummary = BuildDocSummary(d, pdfPath, docText, lastPageText, lastTwoText, header, footer, footerSignatureRaw, docBookmarks, analysis.Signatures, docLabel, wordsWithCoords);
+            var isRequerimentoDoc = IsRequerimentoPagamentoHonorarios(originalLabel, d.FirstPageText, docText);
+            if (isRequerimentoDoc)
+            {
+                docLabel = "Requerimento de Pagamento de Honorarios";
+                docType = docLabel;
+            }
+
+            var scriptLabel = docLabel;
+            var docMeta = BuildDocMeta(d, pdfPath, docText, lastPageText, lastTwoText, header, subHeader, footer, footerSignatureRaw, docBookmarks, analysis.Signatures, docLabel, wordsWithCoords);
             var laudoHash = ComputeLaudoHashSha1(docText);
             LaudoHashDbEntry? hashHit = null;
             if (_laudoHashDb != null && !string.IsNullOrWhiteSpace(laudoHash))
@@ -716,23 +944,34 @@ namespace FilterPDF.Commands
                                   docType.Contains("certidão", StringComparison.OrdinalIgnoreCase);
             var attachDespacho = despachoMatch != null && (labelIsDespacho || overlapRatio >= 0.5);
             var attachCertidao = certidaoMatch != null && (labelIsCertidao || certOverlapRatio >= 0.5);
-            var isDespacho = labelIsDespacho || attachDespacho;
-            var isCertidao = labelIsCertidao || attachCertidao;
-            var dateFooter = docSummary.TryGetValue("date_footer", out var df) ? df?.ToString() ?? "" : "";
-            var signedAtSummary = docSummary.TryGetValue("signed_at", out var sa) ? sa?.ToString() ?? "" : "";
+            var isDespachoCandidate = labelIsDespacho || attachDespacho;
+            var isCertidaoCandidate = labelIsCertidao || attachCertidao;
+            var dateFooter = docMeta.TryGetValue("date_footer", out var df) ? df?.ToString() ?? "" : "";
+            var signedAtSummary = docMeta.TryGetValue("signed_at", out var sa) ? sa?.ToString() ?? "" : "";
             if (!string.IsNullOrWhiteSpace(signedAtSummary))
                 dateFooter = signedAtSummary;
             if (!string.IsNullOrWhiteSpace(dateFooter))
             {
-                if (isCertidao)
-                    docSummary["certidao_date"] = dateFooter;
-                if (isDespacho)
-                    docSummary["despacho_date"] = dateFooter;
+                if (isCertidaoCandidate)
+                    docMeta["certidao_date"] = dateFooter;
+                if (isDespachoCandidate)
+                    docMeta["despacho_date"] = dateFooter;
             }
-            var forcedBucket = isDespacho ? "principal" : null;
-            var extractedFields = ExtractFields(docText, wordsWithCoords, d, pdfPath, scripts, forcedBucket);
+            var cfg = _tjpbCfg ?? new TjpbDespachoConfig();
+            var minPages = cfg.Thresholds.MinPages > 0 ? cfg.Thresholds.MinPages : 2;
+            var densityMin = cfg.Thresholds.DensityMin > 0 ? cfg.Thresholds.DensityMin : 0;
+            var densityOk = textDensity >= densityMin;
+            var isDespachoValid = isDespachoCandidate && d.PageCount >= minPages && densityOk && MatchesOrigin(docMeta, "despacho") && MatchesSigner(docMeta);
+            var isCertidaoValid = isCertidaoCandidate && MatchesOrigin(docMeta, "certidao") && MatchesSigner(docMeta);
+            var isDespachoShort = isDespachoCandidate && d.PageCount < 2;
+
+            var forcedBucket = isDespachoValid ? "principal" : null;
+            var extractedFields = ExtractFields(docText, wordsWithCoords, d, pdfPath, scripts, forcedBucket, scriptLabel);
             var bandFields = new List<Dictionary<string, object>>();
             var directedFields = ExtractDirectedValues(analysis, d, docType, docText);
+            var requerimentoFields = isRequerimentoDoc
+                ? ExtractRequerimentoFields(docText, wordsWithCoords, d.StartPage, d.EndPage)
+                : new List<Dictionary<string, object>>();
             if (attachDespacho)
             {
                 var despachoFields = ConvertDespachoFields(despachoMatch, "despacho_extractor");
@@ -745,22 +984,32 @@ namespace FilterPDF.Commands
                 if (certidaoFields.Count > 0)
                     extractedFields.AddRange(certidaoFields);
             }
-            if (isDespacho)
+            if (isDespachoValid)
             {
                 bandFields = ExtractBandFields(docText, wordsWithCoords, d.StartPage);
                 extractedFields = MergeFields(extractedFields, bandFields);
             }
             if (directedFields.Count > 0)
                 extractedFields = MergeFields(extractedFields, directedFields);
-            AddDocSummaryFallbacks(extractedFields, docSummary, d.StartPage, wordsWithCoords);
+            if (requerimentoFields.Count > 0)
+                extractedFields = MergeFields(extractedFields, requerimentoFields);
+            if (isDespachoValid)
+                extractedFields = FilterDespachoValorPages(extractedFields, d.StartPage, d.EndPage);
+            if (isRequerimentoDoc)
+                extractedFields = FilterRequerimentoFields(extractedFields);
+            AddDocMetaFallbacks(extractedFields, docMeta, d.StartPage, wordsWithCoords);
+            var paragraphs = BuildParagraphsFromWords(wordsWithCoords);
+            RefineFieldsWithParagraphs(extractedFields, paragraphs, docMeta);
             var normalizedFields = NormalizeAndValidateFields(extractedFields);
-            var missingFields = EnsureRequiredFields(normalizedFields);
-            var forensics = BuildForensics(d, analysis, docText, wordsWithCoords);
+            var missingFields = EnsureRequiredFields(normalizedFields, isDespachoValid, isCertidaoValid, isRequerimentoDoc);
+            var forensics = BuildForensics(d, analysis, docText, wordsWithCoords, paragraphs);
             var despachoInfo = DetectDespachoTipo(docText, lastTwoText);
-            var isDespachoValid = isDespacho && d.PageCount >= 2 && MatchesOrigin(docSummary, "despacho") && MatchesSigner(docSummary);
-            var isDespachoShort = isDespacho && d.PageCount < 2;
-            var isCertidaoValid = isCertidao && MatchesOrigin(docSummary, "certidao") && MatchesSigner(docSummary);
-            var isRequerimento = docType.Contains("requerimento de pagamento de honorarios", StringComparison.OrdinalIgnoreCase);
+            var isDespachoAutorizacao = isDespachoValid && (despachoInfo.Categoria == "autorizacao" || despachoInfo.Destino == "georc");
+            var isDespachoEncaminhamento = isDespachoValid && (despachoInfo.Categoria == "encaminhamento" || despachoInfo.Destino == "conselho");
+            var isRequerimento = isRequerimentoDoc;
+            var requerimentoFieldsOnly = isRequerimento
+                ? normalizedFields.Where(f => string.Equals(f.GetValueOrDefault("method")?.ToString(), "requerimento_extractor", StringComparison.OrdinalIgnoreCase)).ToList()
+                : new List<Dictionary<string, object>>();
 
             var obj = new Dictionary<string, object>
             {
@@ -777,25 +1026,21 @@ namespace FilterPDF.Commands
                 ["hash_db_autor"] = hashHit?.Autor ?? "",
                 ["hash_db_arquivo"] = hashHit?.Arquivo ?? "",
                 ["hash_db_quesitos"] = hashHit?.Quesitos ?? "",
-                ["is_despacho"] = isDespacho,
-                ["is_certidao"] = isCertidao,
+                ["is_despacho"] = isDespachoCandidate,
+                ["is_certidao"] = isCertidaoCandidate,
                 ["is_despacho_valid"] = isDespachoValid,
                 ["is_despacho_short"] = isDespachoShort,
                 ["is_certidao_valid"] = isCertidaoValid,
                 ["is_requerimento_pagamento_honorarios"] = isRequerimento,
+                ["requerimento_fields"] = requerimentoFieldsOnly,
                 ["despacho_overlap_ratio"] = despachoMatch != null ? overlapRatio : 0.0,
                 ["despacho_overlap_pages"] = despachoMatch != null ? overlapPages : 0,
                 ["despacho_match_score"] = despachoMatch != null ? despachoMatch.MatchScore : 0.0,
                 ["certidao_overlap_ratio"] = certidaoMatch != null ? certOverlapRatio : 0.0,
                 ["certidao_overlap_pages"] = certidaoMatch != null ? certOverlapPages : 0,
                 ["certidao_match_score"] = certidaoMatch != null ? certidaoMatch.MatchScore : 0.0,
-                ["despacho_tipo"] = isDespacho ? despachoInfo.Tipo : "-",
-                ["despacho_categoria"] = isDespacho ? despachoInfo.Categoria : "-",
-                ["despacho_destino"] = isDespacho ? despachoInfo.Destino : "-",
-                ["is_despacho_autorizacao"] = isDespacho && despachoInfo.Categoria == "autorizacao",
-                ["is_despacho_encaminhamento"] = isDespacho && despachoInfo.Categoria == "encaminhamento",
-                ["is_despacho_georc"] = isDespacho && despachoInfo.Destino == "georc",
-                ["is_despacho_conselho"] = isDespacho && despachoInfo.Destino == "conselho",
+                ["is_despacho_autorizacao"] = isDespachoAutorizacao,
+                ["is_despacho_encaminhamento"] = isDespachoEncaminhamento,
                 ["modification_dates"] = analysis.ModificationDates,
                 ["start_page"] = d.StartPage,
                 ["end_page"] = d.EndPage,
@@ -824,11 +1069,17 @@ namespace FilterPDF.Commands
                 ["certidao_extraction"] = attachCertidao ? certidaoMatch : null,
                 ["forensics"] = forensics
             };
-            foreach (var kv in docSummary)
+            foreach (var kv in docMeta)
             {
                 if (!obj.ContainsKey(kv.Key))
                     obj[kv.Key] = kv.Value;
             }
+            EnsureDocPayloadDefaults(obj);
+            var fullPayload = new Dictionary<string, object>(obj);
+            obj["doc_payload"] = fullPayload;
+            if (isDespachoValid) obj["despacho_payload"] = fullPayload;
+            if (isCertidaoValid) obj["certidao_payload"] = fullPayload;
+            if (isRequerimento) obj["requerimento_payload"] = fullPayload;
             if (debug)
             {
                 obj["_debug"] = new Dictionary<string, object>
@@ -864,6 +1115,8 @@ namespace FilterPDF.Commands
                 ["end_page"] = doc.GetValueOrDefault("end_page") ?? 0,
                 ["processo_administrativo"] = Get("PROCESSO_ADMINISTRATIVO"),
                 ["processo_judicial"] = Get("PROCESSO_JUDICIAL"),
+                ["promovente"] = Get("PROMOVENTE"),
+                ["promovido"] = Get("PROMOVIDO"),
                 ["perito"] = Get("PERITO"),
                 ["perito_cpf"] = Get("CPF_PERITO"),
                 ["especialidade"] = Get("ESPECIALIDADE"),
@@ -872,6 +1125,282 @@ namespace FilterPDF.Commands
                 ["valor_arbitrado_de"] = vDe,
                 ["valor_arbitrado_cm"] = vCm,
                 ["valor_arbitrado_geral"] = vGeral,
+                ["comarca"] = Get("COMARCA"),
+                ["vara"] = Get("VARA")
+            };
+        }
+
+        private void WriteCsvExport(string path, List<ProcessGroup> groups)
+        {
+            if (groups == null || groups.Count == 0)
+            {
+                Console.WriteLine("[pipeline-tjpb] CSV: nenhum processo para exportar.");
+                return;
+            }
+
+            var headers = new[]
+            {
+                "process",
+                "processo_administrativo",
+                "processo_judicial",
+                "comarca",
+                "vara",
+                "promovente",
+                "promovido",
+                "perito",
+                "perito_cpf",
+                "especialidade",
+                "especie_pericia",
+                "valor_arbitrado_jz",
+                "valor_arbitrado_de",
+                "valor_arbitrado_cm",
+                "valor_arbitrado_final",
+                "data_arbitrado_final",
+                "despacho_label",
+                "certidao_label",
+                "requerimento_label"
+            };
+
+            var sb = new StringBuilder();
+            sb.AppendLine(string.Join(";", headers.Select(CsvEscape)));
+
+            foreach (var grp in groups)
+            {
+                var row = BuildProcessRow(grp.Process, grp.Documents);
+                var line = string.Join(";", headers.Select(h => CsvEscape(row.TryGetValue(h, out var v) ? v : "")));
+                sb.AppendLine(line);
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+            File.WriteAllText(path, sb.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+            Console.WriteLine($"[pipeline-tjpb] CSV exportado: {path} ({groups.Count} processos).");
+        }
+
+        private Dictionary<string, string> BuildProcessRow(string process, List<Dictionary<string, object>> docs)
+        {
+            docs ??= new List<Dictionary<string, object>>();
+            var despachoDoc = PickBestDoc(docs, d => GetBool(d, "is_despacho_valid"));
+            var certidaoDoc = PickBestDoc(docs, d => GetBool(d, "is_certidao_valid"));
+            var requerimentoDoc = PickBestDoc(docs, d => GetBool(d, "is_requerimento_pagamento_honorarios"));
+            var fallbackDoc = docs.FirstOrDefault();
+
+            string PickField(string field, params Dictionary<string, object>?[] priorityDocs)
+            {
+                foreach (var doc in priorityDocs)
+                {
+                    if (doc == null) continue;
+                    var fields = GetFieldsFromDoc(doc);
+                    var value = PickBestFieldValue(fields, field);
+                    if (!string.IsNullOrWhiteSpace(value)) return value;
+                }
+                return "";
+            }
+
+            string PickMeta(string metaKey, params Dictionary<string, object>?[] priorityDocs)
+            {
+                foreach (var doc in priorityDocs)
+                {
+                    if (doc == null) continue;
+                    if (doc.TryGetValue(metaKey, out var v) && v != null)
+                    {
+                        var s = v.ToString() ?? "";
+                        if (!string.IsNullOrWhiteSpace(s)) return s;
+                    }
+                }
+                return "";
+            }
+
+            var processoAdministrativo = PickField("PROCESSO_ADMINISTRATIVO", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+            if (string.IsNullOrWhiteSpace(processoAdministrativo))
+                processoAdministrativo = PickMeta("sei_process", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+
+            var processoJudicial = PickField("PROCESSO_JUDICIAL", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+            if (string.IsNullOrWhiteSpace(processoJudicial))
+                processoJudicial = PickMeta("process_cnj", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+
+            var perito = PickField("PERITO", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+            if (string.IsNullOrWhiteSpace(perito))
+                perito = PickMeta("interested_name", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+
+            var peritoCpf = PickField("CPF_PERITO", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+
+            var especialidade = PickField("ESPECIALIDADE", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+            if (string.IsNullOrWhiteSpace(especialidade))
+                especialidade = PickMeta("interested_profession", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+
+            var especiePericia = PickField("ESPECIE_DA_PERICIA", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+
+            var promovente = PickField("PROMOVENTE", despachoDoc, certidaoDoc, fallbackDoc);
+            var promovido = PickField("PROMOVIDO", despachoDoc, certidaoDoc, fallbackDoc);
+
+            var valorJz = PickField("VALOR_ARBITRADO_JZ", requerimentoDoc, despachoDoc, fallbackDoc);
+            var valorDe = PickField("VALOR_ARBITRADO_DE", despachoDoc, fallbackDoc);
+            var valorCm = PickField("VALOR_ARBITRADO_CM", certidaoDoc, fallbackDoc);
+            var valorFinal = "";
+            var dataFinal = "";
+            if (!string.IsNullOrWhiteSpace(valorCm))
+            {
+                valorFinal = valorCm;
+                dataFinal = PickMeta("certidao_date", certidaoDoc) ?? "";
+                if (string.IsNullOrWhiteSpace(dataFinal))
+                    dataFinal = PickMeta("signed_at", certidaoDoc) ?? "";
+            }
+            else if (!string.IsNullOrWhiteSpace(valorDe))
+            {
+                valorFinal = valorDe;
+                dataFinal = PickMeta("despacho_date", despachoDoc) ?? "";
+                if (string.IsNullOrWhiteSpace(dataFinal))
+                    dataFinal = PickMeta("signed_at", despachoDoc) ?? "";
+            }
+            else if (!string.IsNullOrWhiteSpace(valorJz))
+            {
+                valorFinal = valorJz;
+                dataFinal = PickMeta("despacho_date", despachoDoc, requerimentoDoc) ?? "";
+                if (string.IsNullOrWhiteSpace(dataFinal))
+                    dataFinal = PickMeta("signed_at", despachoDoc, requerimentoDoc) ?? "";
+            }
+
+            var comarca = PickField("COMARCA", despachoDoc, certidaoDoc, fallbackDoc);
+            if (string.IsNullOrWhiteSpace(comarca))
+                comarca = PickMeta("comarca", despachoDoc, certidaoDoc, fallbackDoc);
+
+            var vara = PickField("VARA", despachoDoc, certidaoDoc, fallbackDoc);
+            if (string.IsNullOrWhiteSpace(vara))
+                vara = PickMeta("juizo_vara", despachoDoc, certidaoDoc, fallbackDoc);
+
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["process"] = process ?? "",
+                ["processo_administrativo"] = processoAdministrativo ?? "",
+                ["processo_judicial"] = processoJudicial ?? "",
+                ["comarca"] = comarca ?? "",
+                ["vara"] = vara ?? "",
+                ["promovente"] = promovente ?? "",
+                ["promovido"] = promovido ?? "",
+                ["perito"] = perito ?? "",
+                ["perito_cpf"] = peritoCpf ?? "",
+                ["especialidade"] = especialidade ?? "",
+                ["especie_pericia"] = especiePericia ?? "",
+                ["valor_arbitrado_jz"] = valorJz ?? "",
+                ["valor_arbitrado_de"] = valorDe ?? "",
+                ["valor_arbitrado_cm"] = valorCm ?? "",
+                ["valor_arbitrado_final"] = valorFinal ?? "",
+                ["data_arbitrado_final"] = dataFinal ?? "",
+                ["despacho_label"] = despachoDoc?.GetValueOrDefault("doc_label")?.ToString() ?? "",
+                ["certidao_label"] = certidaoDoc?.GetValueOrDefault("doc_label")?.ToString() ?? "",
+                ["requerimento_label"] = requerimentoDoc?.GetValueOrDefault("doc_label")?.ToString() ?? ""
+            };
+        }
+
+        private Dictionary<string, object>? PickBestDoc(List<Dictionary<string, object>> docs, Func<Dictionary<string, object>, bool> predicate)
+        {
+            if (docs == null || docs.Count == 0) return null;
+            var candidates = docs.Where(predicate).ToList();
+            if (candidates.Count == 0) return null;
+            return candidates
+                .OrderByDescending(d => GetInt(d, "doc_pages"))
+                .ThenByDescending(d => GetInt(d, "end_page"))
+                .FirstOrDefault();
+        }
+
+        private List<Dictionary<string, object>> GetFieldsFromDoc(Dictionary<string, object> doc)
+        {
+            if (doc == null) return new List<Dictionary<string, object>>();
+            if (doc.TryGetValue("fields", out var obj))
+            {
+                if (obj is List<Dictionary<string, object>> list) return list;
+                if (obj is JArray arr)
+                    return arr.ToObject<List<Dictionary<string, object>>>() ?? new List<Dictionary<string, object>>();
+            }
+            return new List<Dictionary<string, object>>();
+        }
+
+        private int GetInt(Dictionary<string, object> doc, string key)
+        {
+            if (doc == null || !doc.TryGetValue(key, out var v) || v == null) return 0;
+            if (v is int i) return i;
+            if (v is long l) return (int)l;
+            if (int.TryParse(v.ToString(), out var r)) return r;
+            return 0;
+        }
+
+        private bool GetBool(Dictionary<string, object> doc, string key)
+        {
+            if (doc == null || !doc.TryGetValue(key, out var v) || v == null) return false;
+            if (v is bool b) return b;
+            if (bool.TryParse(v.ToString(), out var r)) return r;
+            if (int.TryParse(v.ToString(), out var i)) return i != 0;
+            return false;
+        }
+
+        private string CsvEscape(string value)
+        {
+            var v = value ?? "";
+            if (v.Contains('"'))
+                v = v.Replace("\"", "\"\"");
+            if (v.Contains(';') || v.Contains('\n') || v.Contains('\r') || v.Contains('"'))
+                return $"\"{v}\"";
+            return v;
+        }
+
+        private void EnsureDocPayloadDefaults(Dictionary<string, object> doc)
+        {
+            void Ensure(string key, object value)
+            {
+                if (!doc.ContainsKey(key) || doc[key] == null)
+                    doc[key] = value;
+            }
+
+            Ensure("certidao_date", "");
+            Ensure("despacho_date", "");
+            Ensure("process_bbox", new Dictionary<string, double>());
+            Ensure("interested_bbox", new Dictionary<string, double>());
+            Ensure("juizo_bbox", new Dictionary<string, double>());
+            Ensure("origin_main", "");
+            Ensure("origin_sub", "");
+            Ensure("origin_extra", "");
+            Ensure("signer", "");
+            Ensure("signed_at", "");
+            Ensure("header_hash", "");
+            Ensure("title", "");
+            Ensure("template", "");
+            Ensure("sei_process", "");
+            Ensure("sei_doc", "");
+            Ensure("sei_crc", "");
+            Ensure("sei_verifier", "");
+            Ensure("auth_url", "");
+            Ensure("date_footer", "");
+            Ensure("process_line", "");
+            Ensure("interested_line", "");
+            Ensure("interested_name", "");
+            Ensure("interested_profession", "");
+            Ensure("interested_email", "");
+            Ensure("juizo_line", "");
+            Ensure("juizo_vara", "");
+            Ensure("comarca", "");
+            Ensure("forensics", new Dictionary<string, object>());
+            Ensure("fields", new List<Dictionary<string, object>>());
+            Ensure("fields_missing", new List<string>());
+            Ensure("band_fields", new List<Dictionary<string, object>>());
+            Ensure("bookmarks", new List<Dictionary<string, object>>());
+            Ensure("anexos_bookmarks", new List<Dictionary<string, object>>());
+        }
+
+        private Dictionary<string, object> BuildRequerimentoPayload(List<Dictionary<string, object>> fields)
+        {
+            if (fields == null) fields = new List<Dictionary<string, object>>();
+            string Get(string name) => PickBestFieldValue(fields, name);
+
+            var vJz = Get("VALOR_ARBITRADO_JZ");
+            return new Dictionary<string, object>
+            {
+                ["processo_administrativo"] = Get("PROCESSO_ADMINISTRATIVO"),
+                ["processo_judicial"] = Get("PROCESSO_JUDICIAL"),
+                ["perito"] = Get("PERITO"),
+                ["perito_cpf"] = Get("CPF_PERITO"),
+                ["especialidade"] = Get("ESPECIALIDADE"),
+                ["especie_pericia"] = Get("ESPECIE_DA_PERICIA"),
+                ["valor_arbitrado_jz"] = vJz,
                 ["comarca"] = Get("COMARCA"),
                 ["vara"] = Get("VARA")
             };
@@ -928,10 +1457,12 @@ namespace FilterPDF.Commands
 
         // Doc type classification removida: usamos apenas o nome do bookmark como rótulo.
 
-        private Dictionary<string, object> BuildDocSummary(DocumentBoundary d, string pdfPath, string fullText, string lastPageText, string lastTwoText, string header, string footer, string footerSignatureRaw, List<Dictionary<string, object>> bookmarks, List<DigitalSignature> signatures, string docLabel, List<Dictionary<string, object>> words)
+        private Dictionary<string, object> BuildDocMeta(DocumentBoundary d, string pdfPath, string fullText, string lastPageText, string lastTwoText, string header, string subHeader, string footer, string footerSignatureRaw, List<Dictionary<string, object>> bookmarks, List<DigitalSignature> signatures, string docLabel, List<Dictionary<string, object>> words)
         {
             string originMain = ExtractOrigin(header, bookmarks, fullText, excludeGeneric: true);
-            string originSub = ExtractSubOrigin(header, bookmarks, fullText, originMain, excludeGeneric: true);
+            string originSub = !string.IsNullOrWhiteSpace(subHeader)
+                ? subHeader
+                : ExtractSubOrigin(header, bookmarks, fullText, originMain, excludeGeneric: true);
             string originExtra = ExtractExtraOrigin(header, bookmarks, fullText, originMain, originSub);
             var sei = ExtractSeiMetadata(fullText, lastTwoText, footer, docLabel);
             string signer = sei.Signer ?? ExtractSigner(lastTwoText, footer, footerSignatureRaw, signatures);
@@ -941,6 +1472,19 @@ namespace FilterPDF.Commands
             string template = docLabel; // não classificar; manter o nome do bookmark
             string title = ExtractTitle(header, bookmarks, fullText, originMain, originSub);
             var paras = BuildParagraphsFromWords(words);
+            var orderedParas = paras.OrderBy(p => p.Page).ThenByDescending(p => p.Ny0).ToArray();
+            var firstPara = orderedParas.FirstOrDefault()?.Text ?? "";
+            var lastPara = orderedParas.LastOrDefault()?.Text ?? "";
+            var docHead = string.IsNullOrWhiteSpace(firstPara)
+                ? ""
+                : (string.IsNullOrWhiteSpace(header) ? firstPara : $"{header}\n{firstPara}");
+            var docTail = string.IsNullOrWhiteSpace(lastPara)
+                ? ""
+                : (string.IsNullOrWhiteSpace(footer) ? lastPara : $"{lastPara}\n{footer}");
+            if (!string.IsNullOrWhiteSpace(footerSignatureRaw))
+            {
+                docTail = string.IsNullOrWhiteSpace(docTail) ? footerSignatureRaw : $"{docTail}\n{footerSignatureRaw}";
+            }
             var party = ExtractPartyInfo(fullText);
             var partyBBoxes = ExtractPartyBBoxes(paras, d.StartPage, d.EndPage);
             var procInfo = ExtractProcessInfo(paras, sei.Process);
@@ -964,6 +1508,8 @@ namespace FilterPDF.Commands
                 ["sei_verifier"] = sei.Verifier,
                 ["auth_url"] = sei.AuthUrl,
                 ["date_footer"] = dateFooter,
+                ["doc_head"] = docHead,
+                ["doc_tail"] = docTail,
                 ["process_line"] = procInfo.ProcessLine,
                 ["process_bbox"] = procInfo.ProcessBBox,
                 ["interested_line"] = party.InterestedLine,
@@ -1177,14 +1723,14 @@ namespace FilterPDF.Commands
         }
 
         // FORÊNSE
-        private Dictionary<string, object> BuildForensics(DocumentBoundary d, PDFAnalysisResult analysis, string docText, List<Dictionary<string, object>> words)
+        private Dictionary<string, object> BuildForensics(DocumentBoundary d, PDFAnalysisResult analysis, string docText, List<Dictionary<string, object>> words, ParagraphObj[]? paragraphs = null)
         {
             var result = new Dictionary<string, object>();
 
             // clusterizar linhas (y) por página
             var lineObjs = BuildLines(words);
             // parágrafos (forensics)
-            var paragraphs = BuildParagraphsFromWords(words);
+            var paragraphsLocal = paragraphs ?? BuildParagraphsFromWords(words);
 
             // fontes/tamanhos dominantes
             var fontNames = words.Select(w => w["font"]?.ToString() ?? "").Where(f => f != "").ToList();
@@ -1224,7 +1770,7 @@ namespace FilterPDF.Commands
             result["repeat_lines"] = repeats;
             result["anchors"] = anchors;
             result["bands"] = bands;
-            result["paragraphs"] = paragraphs.Select(p => new
+            result["paragraphs"] = paragraphsLocal.Select(p => new
             {
                 page = p.Page,
                 nx0 = p.NX0,
@@ -1249,7 +1795,44 @@ namespace FilterPDF.Commands
                 foreach (var c in clusters)
                 {
                     var ordered = c.OrderBy(w => Convert.ToDouble(w["x0"])).ToList();
-                    string text = string.Join(" ", ordered.Select(w => w["text"].ToString()));
+                    if (ordered.Count == 0) continue;
+
+                    var charWidths = ordered
+                        .Select(w =>
+                        {
+                            var t = w["text"]?.ToString() ?? "";
+                            if (t.Length == 0) return 0.0;
+                            return (Convert.ToDouble(w["x1"]) - Convert.ToDouble(w["x0"])) / t.Length;
+                        })
+                        .Where(v => v > 0)
+                        .ToList();
+
+                    double avgChar = Median(charWidths);
+                    if (avgChar <= 0) avgChar = ordered.Average(w => Convert.ToDouble(w["x1"]) - Convert.ToDouble(w["x0"]));
+
+                    double singleRatio = ordered.Count(w => (w["text"]?.ToString() ?? "").Trim().Length == 1) / (double)ordered.Count;
+                    var gaps = new List<double>();
+                    for (int i = 1; i < ordered.Count; i++)
+                    {
+                        double gap = Convert.ToDouble(ordered[i]["x0"]) - Convert.ToDouble(ordered[i - 1]["x1"]);
+                        if (gap > 0) gaps.Add(gap);
+                    }
+                    double spaceThreshold = ComputeSpaceThreshold(gaps, avgChar, singleRatio > 0.5);
+
+                    var sb = new System.Text.StringBuilder();
+                    Dictionary<string, object> prev = null;
+                    foreach (var w in ordered)
+                    {
+                        if (prev != null)
+                        {
+                            double gap = Convert.ToDouble(w["x0"]) - Convert.ToDouble(prev["x1"]);
+                            if (gap > spaceThreshold) sb.Append(' ');
+                        }
+                        sb.Append(w["text"]?.ToString() ?? "");
+                        prev = w;
+                    }
+
+                    string text = TextUtils.FixMissingSpaces(sb.ToString().Trim());
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
                     double nx0 = ordered.Min(w => Convert.ToDouble(w["nx0"]));
@@ -1440,7 +2023,6 @@ namespace FilterPDF.Commands
                 {
                     var line = cl.OrderBy(w => Convert.ToDouble(w["x0"])).ToList();
                     string text = RebuildLine(line);
-                    text = DespaceIfNeeded(text);
                     var tokens = text.Split(' ')
                                      .Select(t => Regex.Replace(t, @"[^\w\d]+", "", RegexOptions.None).ToLowerInvariant())
                                      .Where(t => t.Length > 0 && !stopWords.Contains(t))
@@ -1587,6 +2169,31 @@ namespace FilterPDF.Commands
             return (items[n / 2 - 1] + items[n / 2]) / 2.0;
         }
 
+        private double ComputeSpaceThreshold(List<double> gaps, double avgChar, bool preferMergeLetters)
+        {
+            double fallback = avgChar * (preferMergeLetters ? 2.2 : 0.8);
+            if (gaps == null || gaps.Count == 0) return fallback;
+
+            gaps = gaps.OrderBy(x => x).ToList();
+            double maxRatio = 0;
+            int splitIndex = -1;
+            for (int i = 1; i < gaps.Count; i++)
+            {
+                if (gaps[i - 1] <= 0) continue;
+                double ratio = gaps[i] / gaps[i - 1];
+                if (ratio > maxRatio)
+                {
+                    maxRatio = ratio;
+                    splitIndex = i;
+                }
+            }
+
+            if (maxRatio >= 1.6 && splitIndex > 0)
+                return (gaps[splitIndex - 1] + gaps[splitIndex]) / 2.0;
+
+            return fallback;
+        }
+
         private double Quantile(List<double> items, double q)
         {
             if (items == null || items.Count == 0) return 0;
@@ -1671,12 +2278,49 @@ namespace FilterPDF.Commands
             return GenericOrigins.Any(g => string.Equals(g, t, StringComparison.OrdinalIgnoreCase));
         }
 
+        private bool IsGenericNormalized(string text)
+        {
+            var norm = NormalizeHeaderKey(text);
+            if (string.IsNullOrWhiteSpace(norm)) return false;
+            string[] tokens =
+            {
+                "PODERJUDICIARIO",
+                "TRIBUNALDEJUSTICA",
+                "TRIBUNALDEJUSTICADAPARAIBA",
+                "ESTADODAPARAIBA",
+                "MINISTERIOPUBLICO",
+                "DEFENSORIAPUBLICA",
+                "PROCURADORIA",
+                "GOVERNODOESTADO"
+            };
+            return tokens.Any(t => norm == t);
+        }
+
         private bool IsCandidateTitle(string line)
         {
             if (string.IsNullOrWhiteSpace(line)) return false;
             var lower = line.ToLowerInvariant();
             string[] kws = { "despacho", "certidão", "certidao", "sentença", "sentenca", "decisão", "decisao", "ofício", "oficio", "laudo", "nota de empenho", "autorização", "autorizacao", "requisição", "requisicao" };
             return kws.Any(k => lower.Contains(k));
+        }
+
+        private bool IsCandidateTitleNormalized(string line)
+        {
+            var norm = NormalizeHeaderKey(line);
+            if (string.IsNullOrWhiteSpace(norm)) return false;
+            string[] kws =
+            {
+                "DESPACHO",
+                "CERTIDAO",
+                "SENTENCA",
+                "DECISAO",
+                "OFICIO",
+                "LAUDO",
+                "NOTADEEMPENHO",
+                "AUTORIZACAO",
+                "REQUISICAO"
+            };
+            return kws.Any(k => norm.Contains(k));
         }
 
         private string ExtractOrigin(string header, List<Dictionary<string, object>> bookmarks, string text, bool excludeGeneric)
@@ -1824,6 +2468,84 @@ namespace FilterPDF.Commands
             return string.Join("\n", lines.Skip(start));
         }
 
+        private string ExtractFooterSignatureRawFromWords(List<Dictionary<string, object>> words, int page, double footerBandPct = 0.30, int tailLines = 8)
+        {
+            if (words == null || words.Count == 0) return "";
+            var lines = BuildLines(words)
+                .Where(l => l.Page == page && l.NY0 <= footerBandPct)
+                .OrderByDescending(l => l.NY0) // top -> bottom
+                .Select(l => NormalizeFooterLineText(l.Text))
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .ToList();
+
+            if (lines.Count == 0) return "";
+
+            var sigRegex = new Regex(@"(assinado|assinatura|assinado\s+eletronicamente\s+por:|documento\s+\d+\s+p[aá]gina\s+\d+\s+assinado|verificador|crc|c[oó]digo)", RegexOptions.IgnoreCase);
+            int lastSigIdx = -1;
+            for (int i = lines.Count - 1; i >= 0; i--)
+            {
+                if (sigRegex.IsMatch(lines[i]))
+                {
+                    lastSigIdx = i;
+                    break;
+                }
+            }
+
+            if (lastSigIdx >= 0)
+                return string.Join("\n", lines.Skip(lastSigIdx));
+
+            int fallbackStart = Math.Max(0, lines.Count - Math.Max(4, tailLines));
+            return string.Join("\n", lines.Skip(fallbackStart));
+        }
+
+        private string PickBestFooterSignatureRaw(string textA, string textB)
+        {
+            var a = (textA ?? "").Trim();
+            var b = (textB ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(a)) return b;
+            if (string.IsNullOrWhiteSpace(b)) return a;
+
+            bool aSig = LooksLikeSignatureBlock(a);
+            bool bSig = LooksLikeSignatureBlock(b);
+            if (aSig && !bSig) return a;
+            if (bSig && !aSig) return b;
+
+            return b.Length > a.Length ? b : a;
+        }
+
+        private bool LooksLikeSignatureBlock(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            return Regex.IsMatch(text, @"assinad|assinatura|verificador|crc|documento|c[oó]digo", RegexOptions.IgnoreCase);
+        }
+
+        private string NormalizeFooterLineText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var collapsedSingles = CollapseSingleLetterSpacings(text);
+            var collapsed = TextUtils.CollapseSpacedLettersText(collapsedSingles);
+            return TextUtils.FixMissingSpaces(collapsed).Trim();
+        }
+
+        private string CollapseSingleLetterSpacings(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            // Une letras isoladas separadas por espaços (ex.: "D o c u m e n t o" -> "Documento")
+            return Regex.Replace(text, @"(?<=\b[\p{L}])\s+(?=[\p{L}]\b)", "");
+        }
+
+        private string RestoreNameSpaces(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "";
+            var t = name.Trim();
+            // Reintroduzir separadores comuns (de/da/do/dos/das)
+            t = Regex.Replace(t, @"(?i)(?<=\p{L})(de|da|do|dos|das)(?=\p{L})", " $1 ");
+            // Separar por CamelCase quando existir
+            t = Regex.Replace(t, @"(?<=[a-zà-ÿ])(?=[A-ZÁÀÂÃÉÊÍÓÚÇ])", " ");
+            t = Regex.Replace(t, "\\s+", " ").Trim();
+            return t;
+        }
+
         private string ExtractSignerFromSignatureLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line)) return "";
@@ -1845,7 +2567,18 @@ namespace FilterPDF.Commands
                 ReverseText($"{lastPageText}\n{footer}\n{signatureBlock}")
             };
 
-            foreach (var source in sources)
+            var scanSources = new List<string>();
+            foreach (var s in sources)
+            {
+                if (string.IsNullOrWhiteSpace(s)) continue;
+                scanSources.Add(s);
+                var collapsedSingles = CollapseSingleLetterSpacings(s);
+                var collapsed = TextUtils.CollapseSpacedLettersText(collapsedSingles);
+                if (!string.Equals(collapsed, s, StringComparison.Ordinal))
+                    scanSources.Add(collapsed);
+            }
+
+            foreach (var source in scanSources.Distinct())
             {
                 // "Documento 27 página 2 assinado eletronicamente por: NOME - CPF: ... em 12/06/2024"
                 var docPageSigned = Regex.Match(source, @"documento\s+\d+[^\n]{0,120}?assinado[^\n]{0,60}?por\s*[:\-]?\s*([\p{L} .'’\-]+?)(?=\s*(?:,|\(|\bcpf\b|\bem\b|\n|$|-\s*\d))", RegexOptions.IgnoreCase);
@@ -1861,6 +2594,14 @@ namespace FilterPDF.Commands
                 // Digital signature block (X.509)
                 var sigMatch = Regex.Match(source, @"Assinatura(?:\s+)?:(.+)", RegexOptions.IgnoreCase);
                 if (sigMatch.Success) return sigMatch.Groups[1].Value.Trim();
+
+                // Fallback para texto colapsado (letras espaçadas), remove espaços e tenta capturar o nome
+                var compact = Regex.Replace(source, @"\s+", "");
+                var compactMatch = Regex.Match(compact,
+                    @"assinado(?:digitalmente|eletronicamente)?por(?<name>[\p{L}]{5,80})(?=(?:,|em\d|tecnico|judiciario|$))",
+                    RegexOptions.IgnoreCase);
+                if (compactMatch.Success)
+                    return RestoreNameSpaces(compactMatch.Groups["name"].Value);
             }
 
             if (!string.IsNullOrWhiteSpace(signatureBlock))
@@ -1930,9 +2671,19 @@ namespace FilterPDF.Commands
             preferredSources.Add(source);
 
             // Prefer datas próximas a termos de assinatura
+            var scanSources = new List<string>();
             foreach (var src in preferredSources)
             {
                 if (string.IsNullOrWhiteSpace(src)) continue;
+                scanSources.Add(src);
+                var collapsedSingles = CollapseSingleLetterSpacings(src);
+                var collapsed = TextUtils.CollapseSpacedLettersText(collapsedSingles);
+                if (!string.Equals(collapsed, src, StringComparison.Ordinal))
+                    scanSources.Add(collapsed);
+            }
+
+            foreach (var src in scanSources.Distinct())
+            {
                 var windowMatch = Regex.Match(src, @"assinado[\s\S]{0,200}?(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})", RegexOptions.IgnoreCase);
                 if (windowMatch.Success)
                 {
@@ -2059,20 +2810,20 @@ namespace FilterPDF.Commands
         private static readonly Regex MoneyRegex = new Regex(@"R\$ ?\d{1,3}(\.\d{3})*,\d{2}", RegexOptions.Compiled);
         private static readonly Regex DateNumRegex = new Regex(@"\b[0-3]?\d/[01]?\d/\d{2,4}\b", RegexOptions.Compiled);
 
-        private List<Dictionary<string, object>> ExtractFields(string fullText, List<Dictionary<string, object>> words, DocumentBoundary d, string pdfPath, List<FieldScript> scripts, string? forcedBucket = null)
+        private List<Dictionary<string, object>> ExtractFields(string fullText, List<Dictionary<string, object>> words, DocumentBoundary d, string pdfPath, List<FieldScript> scripts, string? forcedBucket = null, string? nameOverride = null)
         {
-            var name = ExtractDocumentName(d);
+            var name = !string.IsNullOrWhiteSpace(nameOverride) ? nameOverride : ExtractDocumentName(d);
             var bucket = forcedBucket ?? ClassifyBucket(name, fullText);
             var namePdf = name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ? name : name + ".pdf";
             return FieldScripts.RunScripts(scripts, namePdf, fullText ?? string.Empty, words, d.StartPage, bucket);
         }
 
-        private void AddDocSummaryFallbacks(List<Dictionary<string, object>> fields, Dictionary<string, object> docSummary, int page, List<Dictionary<string, object>> words)
+        private void AddDocMetaFallbacks(List<Dictionary<string, object>> fields, Dictionary<string, object> docMeta, int page, List<Dictionary<string, object>> words)
         {
             if (fields == null) return;
             string GetStr(string key)
             {
-                return docSummary.TryGetValue(key, out var v) ? v?.ToString() ?? "" : "";
+                return docMeta.TryGetValue(key, out var v) ? v?.ToString() ?? "" : "";
             }
 
             AddFieldIfMissing(fields, "PROCESSO_ADMINISTRATIVO", GetStr("sei_process"), "doc_meta", 0.55, page, words);
@@ -2083,6 +2834,166 @@ namespace FilterPDF.Commands
             AddFieldIfMissing(fields, "ESPECIALIDADE", GetStr("interested_profession"), "doc_meta", 0.45, page, words);
             AddFieldIfMissing(fields, "DATA", GetStr("signed_at"), "doc_meta", 0.45, page, words);
             AddFieldIfMissing(fields, "ASSINANTE", GetStr("signer"), "doc_meta", 0.50, page, words);
+        }
+
+        private void RefineFieldsWithParagraphs(List<Dictionary<string, object>> fields, ParagraphObj[] paragraphs, Dictionary<string, object> docMeta)
+        {
+            if (fields == null) return;
+
+            bool HasGood(string name)
+            {
+                return fields.Any(f =>
+                {
+                    var n = f.GetValueOrDefault("name")?.ToString() ?? "";
+                    if (!string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return false;
+                    var v = f.GetValueOrDefault("value")?.ToString() ?? "";
+                    return !IsNoisyFieldValue(name, v);
+                });
+            }
+
+            void RemoveNoisy(string name)
+            {
+                fields.RemoveAll(f =>
+                {
+                    var n = f.GetValueOrDefault("name")?.ToString() ?? "";
+                    if (!string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return false;
+                    var v = f.GetValueOrDefault("value")?.ToString() ?? "";
+                    return IsNoisyFieldValue(name, v);
+                });
+            }
+
+            void AddOrReplace(string name, string value, int page, string method)
+            {
+                if (string.IsNullOrWhiteSpace(value)) return;
+                if (HasGood(name)) return;
+                RemoveNoisy(name);
+                fields.Add(new Dictionary<string, object>
+                {
+                    ["name"] = name,
+                    ["value"] = value.Trim(),
+                    ["method"] = method,
+                    ["weight"] = 0.65,
+                    ["page"] = page
+                });
+            }
+
+            string GetMeta(string key) => docMeta.TryGetValue(key, out var v) ? v?.ToString() ?? "" : "";
+
+            // Preferir dados do DTO (derivados de parágrafos/linhas) quando o valor atual é ruidoso
+            AddOrReplace("VARA", GetMeta("juizo_vara"), 0, "doc_meta_refine");
+            AddOrReplace("COMARCA", GetMeta("comarca"), 0, "doc_meta_refine");
+            AddOrReplace("PERITO", GetMeta("interested_name"), 0, "doc_meta_refine");
+            AddOrReplace("ESPECIALIDADE", GetMeta("interested_profession"), 0, "doc_meta_refine");
+
+            // Refinos por parágrafos (quando ainda está faltando ou ruidoso)
+            if (!HasGood("VARA"))
+            {
+                var hit = FindParagraphValue(paragraphs, new Regex(@"\b(ju[ií]zo|vara)\b", RegexOptions.IgnoreCase),
+                    (m, t) => ExtractVaraFromText(t), 80);
+                if (!string.IsNullOrWhiteSpace(hit.value))
+                    AddOrReplace("VARA", NormalizeVara(hit.value), hit.page, "paragraph_refine");
+            }
+
+            if (!HasGood("COMARCA"))
+            {
+                var hit = FindParagraphValue(paragraphs, new Regex(@"comarca\s+de\s+([^\n,;]{3,80})", RegexOptions.IgnoreCase),
+                    (m, _) => m.Groups[1].Value, 60);
+                if (!string.IsNullOrWhiteSpace(hit.value))
+                    AddOrReplace("COMARCA", NormalizeComarca(hit.value), hit.page, "paragraph_refine");
+            }
+
+            if (!HasGood("PERITO") || !HasGood("ESPECIALIDADE"))
+            {
+                var hit = FindParagraphValue(paragraphs, new Regex(@"interessad[oa]\s*:\s*([^\n]{5,120})", RegexOptions.IgnoreCase),
+                    (m, _) => m.Groups[1].Value, 120);
+                if (!string.IsNullOrWhiteSpace(hit.value))
+                {
+                    var parts = Regex.Split(hit.value, @"\s*[–-]\s*");
+                    if (!HasGood("PERITO") && parts.Length > 0)
+                        AddOrReplace("PERITO", NormalizeName(parts[0].Trim()), hit.page, "paragraph_refine");
+                    if (!HasGood("ESPECIALIDADE") && parts.Length > 1)
+                        AddOrReplace("ESPECIALIDADE", NormalizeShortSpecialty(parts[1].Trim()), hit.page, "paragraph_refine");
+                }
+            }
+
+            if (!HasGood("ESPECIALIDADE"))
+            {
+                var hit = FindParagraphValue(paragraphs, new Regex(@"(?:especialidade|profiss[aã]o)\s*[:\-]\s*([^\n]{3,80})", RegexOptions.IgnoreCase),
+                    (m, _) => m.Groups[1].Value, 80);
+                if (!string.IsNullOrWhiteSpace(hit.value))
+                    AddOrReplace("ESPECIALIDADE", NormalizeShortSpecialty(hit.value), hit.page, "paragraph_refine");
+            }
+        }
+
+        private (string value, int page) FindParagraphValue(ParagraphObj[] paragraphs, Regex pattern, Func<Match, string, string> extract, int maxLen)
+        {
+            if (paragraphs == null || paragraphs.Length == 0) return ("", 0);
+            foreach (var p in paragraphs)
+            {
+                var text = p.Text ?? "";
+                if (string.IsNullOrWhiteSpace(text)) continue;
+                var m = pattern.Match(text);
+                if (!m.Success) continue;
+                var val = extract(m, text) ?? "";
+                val = Regex.Replace(val, @"\s+", " ").Trim();
+                if (string.IsNullOrWhiteSpace(val)) continue;
+                if (maxLen > 0 && val.Length > maxLen) val = val.Substring(0, maxLen);
+                return (val, p.Page);
+            }
+            return ("", 0);
+        }
+
+        private string ExtractAfterLabel(string labelValue, string fullText, string labelsPattern)
+        {
+            var text = fullText ?? "";
+            var m = Regex.Match(text, $@"\b(?:{labelsPattern})\b\s*(?:da|do|de)?\s*[:\-]?\s*([^\n,;]{{3,120}})", RegexOptions.IgnoreCase);
+            if (m.Success) return m.Groups[1].Value.Trim();
+            return labelValue;
+        }
+
+        private string ExtractVaraFromText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var m = Regex.Match(text, @"\b(ju[ií]zo|vara)\b[\s\S]{0,120}", RegexOptions.IgnoreCase);
+            if (!m.Success) return "";
+            var tail = text.Substring(m.Index);
+            tail = Regex.Replace(tail, @"(?i)^(ju[ií]zo|vara)\s*(da|do|de)?\s*", "");
+            tail = Regex.Split(tail, @"(?i)\b(comarca|processo|assunto|refer[êe]ncia|interessad[oa])\b").FirstOrDefault() ?? tail;
+            return tail.Trim().TrimEnd('.', ',', ';', '-');
+        }
+
+        private string NormalizeVara(string val)
+        {
+            var v = Regex.Replace(val ?? "", @"(?i)\bju[ií]zo\s+da\s+|\bju[ií]zo\s+do\s+|\bvara\s+", "");
+            v = Regex.Split(v, @"(?i)\b(comarca|processo|assunto|refer[êe]ncia|interessad[oa])\b").FirstOrDefault() ?? v;
+            v = v.Trim().TrimEnd('.', ',', ';', '-');
+            return NormalizeTitle(v);
+        }
+
+        private bool IsNoisyFieldValue(string field, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return true;
+            var v = value.Trim();
+            var f = (field ?? "").Trim().ToUpperInvariant();
+            var words = v.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+
+            if (v.Length > 140) return true;
+            if (words > 12 && (f == "VARA" || f == "COMARCA" || f == "ESPECIALIDADE" || f == "PERITO")) return true;
+            if (Regex.IsMatch(v, @"R\$", RegexOptions.IgnoreCase) && f != "VALOR_ARBITRADO_JZ" && f != "VALOR_ARBITRADO_DE" && f != "VALOR_ARBITRADO_CM")
+                return true;
+            if (Regex.IsMatch(v, @"documento\s+assinado|verificador|crc|autentica|sei", RegexOptions.IgnoreCase))
+                return true;
+            if (Regex.IsMatch(v, @"\d{2}/\d{2}/\d{4}"))
+                return true;
+            if ((f == "VARA" || f == "COMARCA") && Regex.IsMatch(v, @"interessad[oa]|promovente|promovido", RegexOptions.IgnoreCase))
+                return true;
+            if (f == "VARA" && Regex.IsMatch(v, @"^\s*(ju[ií]zo|vara)\s*$", RegexOptions.IgnoreCase))
+                return true;
+            if (f == "ESPECIALIDADE" && Regex.IsMatch(v, @"pagamento|honor[aá]ri|requis", RegexOptions.IgnoreCase))
+                return true;
+            if (f == "PERITO" && Regex.IsMatch(v, @"trata|requis|pagamento|honor[aá]ri", RegexOptions.IgnoreCase))
+                return true;
+            return false;
         }
 
         private void AddFieldIfMissing(List<Dictionary<string, object>> fields, string name, string value, string method, double weight, int page, List<Dictionary<string, object>> words)
@@ -2165,21 +3076,56 @@ namespace FilterPDF.Commands
 
             int firstPage = d.StartPage;
             int lastPage = d.EndPage;
+            int secondPage = d.StartPage + 1;
             string page1Text = SafePageText(analysis, firstPage);
             string lastPageText = SafePageText(analysis, lastPage);
 
-            var mJz = Regex.Match(page1Text, @"honor[aá]rios[^\n]{0,120}?R\$\s*([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
-            if (mJz.Success)
-                AddValueHit(hits, "VALOR_ARBITRADO_JZ", mJz.Groups[1].Value, firstPage, "direct_jz_page1");
+            bool isDespacho = !string.IsNullOrWhiteSpace(docType) &&
+                              docType.Contains("despacho", StringComparison.OrdinalIgnoreCase);
+            bool isCertidao = !string.IsNullOrWhiteSpace(docType) &&
+                              (docType.Contains("certidao_cm", StringComparison.OrdinalIgnoreCase) ||
+                               docType.Contains("certidao", StringComparison.OrdinalIgnoreCase) ||
+                               docType.Contains("certidão", StringComparison.OrdinalIgnoreCase));
+            bool isRequerimento = !string.IsNullOrWhiteSpace(docType) &&
+                                  (docType.Contains("requerimento", StringComparison.OrdinalIgnoreCase) ||
+                                   docType.Contains("pagamento de honor", StringComparison.OrdinalIgnoreCase) ||
+                                   docType.Contains("reserva orçamentária", StringComparison.OrdinalIgnoreCase));
 
-            var mDe = Regex.Match(lastPageText, @"(?:(?:autorizo a despesa)|(?:reserva or[cç]ament[áa]ria)|(?:encaminh?em-se[^\n]{0,80}?GEORC)|(?:proceder à reserva or[cç]ament[áa]ria))[^\n]{0,200}?R\$\s*([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
-            if (mDe.Success)
-                AddValueHit(hits, "VALOR_ARBITRADO_DE", mDe.Groups[1].Value, lastPage, "direct_de_lastpage");
+            if (isRequerimento || (!isDespacho && !isCertidao))
+            {
+                var mJz = Regex.Match(page1Text, @"honor[aá]rios[^\n]{0,120}?R\$\s*([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
+                if (mJz.Success)
+                {
+                    AddValueHit(hits, "VALOR_ARBITRADO_JZ", mJz.Groups[1].Value, firstPage, "direct_jz_page1");
+                }
+                else
+                {
+                    var mValor = Regex.Match(page1Text, @"valor\s+arbitrad[oa][^\n]{0,40}?(?:R\$\s*)?([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
+                    if (!mValor.Success)
+                        mValor = Regex.Match(fullText ?? "", @"valor\s+arbitrad[oa][^\n]{0,40}?(?:R\$\s*)?([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
+                    if (mValor.Success)
+                        AddValueHit(hits, "VALOR_ARBITRADO_JZ", mValor.Groups[1].Value, firstPage, "direct_jz_valor_arbitrado");
+                    else
+                    {
+                        var mImporte = Regex.Match(page1Text, @"(?:importe|import[eê]ncia)[^\n]{0,40}?R\$\s*([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
+                        if (mImporte.Success)
+                            AddValueHit(hits, "VALOR_ARBITRADO_JZ", mImporte.Groups[1].Value, firstPage, "direct_jz_importe");
+                    }
+                }
+            }
 
-            if (!string.IsNullOrWhiteSpace(docType) &&
-                (docType.Contains("certidao_cm", StringComparison.OrdinalIgnoreCase) ||
-                 docType.Contains("certidao", StringComparison.OrdinalIgnoreCase) ||
-                 docType.Contains("certidão", StringComparison.OrdinalIgnoreCase)))
+            if (isDespacho)
+            {
+                if (secondPage <= d.EndPage)
+                {
+                    var page2Text = SafePageText(analysis, secondPage);
+                    var mDe = Regex.Match(page2Text, @"(?:(?:autorizo a despesa)|(?:reserva or[cç]ament[áa]ria)|(?:encaminh?em-se[^\n]{0,80}?GEORC)|(?:proceder à reserva or[cç]ament[áa]ria))[^\n]{0,200}?R\$\s*([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
+                    if (mDe.Success)
+                        AddValueHit(hits, "VALOR_ARBITRADO_DE", mDe.Groups[1].Value, secondPage, "direct_de_page2");
+                }
+            }
+
+            if (isCertidao)
             {
                 var mCm = Regex.Match(fullText ?? "", @"(?:autoriza(?:d[oa])?.{0,80}pagamento|despesa)[^\n]{0,160}?R\$\s*([0-9\.]{1,3}(?:\.[0-9]{3})*,\d{2})", RegexOptions.IgnoreCase);
                 if (mCm.Success)
@@ -2308,7 +3254,7 @@ namespace FilterPDF.Commands
             if (string.IsNullOrWhiteSpace(specialtyCandidate) && !string.IsNullOrWhiteSpace(specialtyVal))
                 specialtyCandidate = MapProfissaoToHonorariosArea(specialtyVal);
 
-            if (!string.IsNullOrWhiteSpace(specialtyCandidate))
+            if (!string.IsNullOrWhiteSpace(specialtyCandidate) && !IsNoisyFieldValue("ESPECIALIDADE", specialtyCandidate))
             {
                 cleaned = cleaned.Where(x => !string.Equals(x.GetValueOrDefault("name")?.ToString(), "ESPECIALIDADE", StringComparison.OrdinalIgnoreCase)).ToList();
                 cleaned.Add(new Dictionary<string, object>
@@ -2317,6 +3263,7 @@ namespace FilterPDF.Commands
                     ["value"] = specialtyCandidate,
                     ["page"] = 0,
                     ["pattern"] = "profissao_map",
+                    ["method"] = "profissao_map",
                     ["weight"] = 0.7
                 });
             }
@@ -2364,6 +3311,34 @@ namespace FilterPDF.Commands
             string cpf = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "CPF_PERITO", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
             string especialidade = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "ESPECIALIDADE", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
             string profissao = profissaoVal;
+
+            // Fallback de espécie por referência (quando não houver match de honorários)
+            var especieAtual = cleaned.FirstOrDefault(f =>
+                    string.Equals(f.GetValueOrDefault("name")?.ToString(), "ESPECIE_DA_PERICIA", StringComparison.OrdinalIgnoreCase))
+                ?.GetValueOrDefault("value")?.ToString() ?? "";
+
+            if (string.IsNullOrWhiteSpace(especieAtual) && _laudosEspecieByEspecialidade != null && _laudosEspecieByEspecialidade.Count > 0)
+            {
+                var espKey = "";
+                if (!string.IsNullOrWhiteSpace(especialidade))
+                    espKey = NormalizeKey(especialidade);
+                if (string.IsNullOrWhiteSpace(espKey) && !string.IsNullOrWhiteSpace(profissaoVal))
+                    espKey = NormalizeKey(profissaoVal);
+                if (string.IsNullOrWhiteSpace(espKey) && !string.IsNullOrWhiteSpace(specialtyCandidate))
+                    espKey = NormalizeKey(specialtyCandidate);
+
+                if (!string.IsNullOrWhiteSpace(espKey) && _laudosEspecieByEspecialidade.TryGetValue(espKey, out var especieRef))
+                {
+                    cleaned.Add(new Dictionary<string, object>
+                    {
+                        ["name"] = "ESPECIE_DA_PERICIA",
+                        ["value"] = especieRef,
+                        ["page"] = 0,
+                        ["pattern"] = "laudos_especie_ref",
+                        ["weight"] = 0.55
+                    });
+                }
+            }
 
             if (_peritoCatalog != null && _peritoCatalog.TryResolve(perito, cpf, out var info, out var confPerito))
             {
@@ -2449,7 +3424,7 @@ namespace FilterPDF.Commands
             return dedup;
         }
 
-        private static readonly string[] RequiredFieldNames = new[]
+        private static readonly string[] RequiredCommonFields = new[]
         {
             "PROCESSO_ADMINISTRATIVO",
             "PROCESSO_JUDICIAL",
@@ -2457,19 +3432,46 @@ namespace FilterPDF.Commands
             "CPF_PERITO",
             "ESPECIALIDADE",
             "ESPECIE_DA_PERICIA",
-            "VALOR_ARBITRADO_JZ",
-            "VALOR_ARBITRADO_DE",
-            "VALOR_ARBITRADO_CM",
             "COMARCA",
             "VARA"
         };
 
-        private List<string> EnsureRequiredFields(List<Dictionary<string, object>> fields)
+        private static readonly string[] RequiredDespachoFields = new[]
+        {
+            "VALOR_ARBITRADO_DE",
+            "VALOR_ARBITRADO_JZ"
+        };
+
+        private static readonly string[] RequiredCertidaoFields = new[]
+        {
+            "VALOR_ARBITRADO_CM"
+        };
+
+        private static readonly string[] RequiredRequerimentoFields = new[]
+        {
+            "VALOR_ARBITRADO_JZ"
+        };
+
+        private List<string> EnsureRequiredFields(List<Dictionary<string, object>> fields, bool isDespacho, bool isCertidao, bool isRequerimento)
         {
             var missing = new List<string>();
             var existing = new HashSet<string>(fields.Select(f => f.GetValueOrDefault("name")?.ToString() ?? ""), StringComparer.OrdinalIgnoreCase);
 
-            foreach (var name in RequiredFieldNames)
+            var required = new List<string>();
+
+            // Campos comuns: aparecem tipicamente em despacho/requerimento (certidão costuma trazer só o CM).
+            if (isDespacho || isRequerimento)
+                required.AddRange(RequiredCommonFields);
+
+            if (isDespacho) required.AddRange(RequiredDespachoFields);
+            if (isCertidao) required.AddRange(RequiredCertidaoFields);
+            if (isRequerimento) required.AddRange(RequiredRequerimentoFields);
+
+            // fallback: se nenhum tipo foi identificado, mantém conjunto comum
+            if (!isDespacho && !isCertidao && !isRequerimento)
+                required.AddRange(RequiredCommonFields);
+
+            foreach (var name in required.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (existing.Contains(name)) continue;
                 missing.Add(name);
@@ -2572,7 +3574,7 @@ namespace FilterPDF.Commands
             {
                 "VALOR_HONORARIOS" or "VALOR_ARBITRADO_JZ" or "VALOR_ARBITRADO_DE" or "VALOR_ARBITRADO_CM" or "ADIANTAMENTO" or "VALOR_TABELADO_ANEXO_I"
                     => Regex.IsMatch(value, @"^\d+(?:\.\d{2})?$"),
-                "CPF_PERITO" => value.Length >= 11,
+                "CPF_PERITO" => Regex.Replace(value ?? "", @"\D", "").Length == 11,
                 "PERITO" => value.Length >= 5,
                 "PROFISSAO" or "ESPECIALIDADE" or "ESPECIE_DA_PERICIA" or "PROMOVENTE" or "PROMOVIDO" or "COMARCA" or "VARA"
                     => value.Length >= 3,
@@ -2631,7 +3633,7 @@ namespace FilterPDF.Commands
         private string NormalizeComarca(string val)
         {
             val = (val ?? "").Replace("Comarca de", "", StringComparison.OrdinalIgnoreCase);
-            val = Regex.Split(val, @"(?i)\b(assunto|processo|referência|referencia|parte)\b").FirstOrDefault() ?? val;
+            val = Regex.Split(val, @"(?i)\b(assunto|processo|referência|referencia|parte|interessad[oa])\b").FirstOrDefault() ?? val;
             val = Regex.Replace(val, @"\b([A-Za-zÀ-ÿ])\s+(?=[A-Za-zÀ-ÿ]\b)", "$1");
             val = val.Trim().TrimEnd('.', ',', ';', '-');
             return NormalizeTitle(val);
@@ -2852,6 +3854,477 @@ namespace FilterPDF.Commands
             return hits;
         }
 
+        private List<Dictionary<string, object>> FilterRequerimentoFields(List<Dictionary<string, object>> fields)
+        {
+            if (fields == null || fields.Count == 0) return fields ?? new List<Dictionary<string, object>>();
+            var strictFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "PROCESSO_JUDICIAL",
+                "PERITO",
+                "CPF_PERITO",
+                "ESPECIALIDADE",
+                "ESPECIE_DA_PERICIA",
+                "COMARCA",
+                "VARA"
+            };
+            var allowDocMeta = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "PROCESSO_ADMINISTRATIVO",
+                "DATA",
+                "ASSINANTE"
+            };
+
+            var filtered = new List<Dictionary<string, object>>();
+            foreach (var f in fields)
+            {
+                var name = f.GetValueOrDefault("name")?.ToString() ?? "";
+                var method = f.GetValueOrDefault("method")?.ToString() ?? "";
+                if (strictFields.Contains(name))
+                {
+                    if (string.Equals(method, "requerimento_extractor", StringComparison.OrdinalIgnoreCase))
+                    {
+                        filtered.Add(f);
+                        continue;
+                    }
+                    if (allowDocMeta.Contains(name) && string.Equals(method, "doc_meta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        filtered.Add(f);
+                        continue;
+                    }
+                    continue;
+                }
+                filtered.Add(f);
+            }
+            return filtered;
+        }
+
+        private List<Dictionary<string, object>> FilterDespachoValorPages(List<Dictionary<string, object>> fields, int startPage, int endPage)
+        {
+            if (fields == null || fields.Count == 0) return fields ?? new List<Dictionary<string, object>>();
+            var page1 = startPage;
+            var page2 = startPage + 1;
+            var filtered = new List<Dictionary<string, object>>();
+
+            foreach (var f in fields)
+            {
+                var name = f.GetValueOrDefault("name")?.ToString() ?? "";
+                if (string.Equals(name, "VALOR_ARBITRADO_JZ", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryGetPage(f, out var pg) && pg == page1)
+                        filtered.Add(f);
+                    continue;
+                }
+                if (string.Equals(name, "VALOR_ARBITRADO_DE", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (page2 <= endPage && TryGetPage(f, out var pg) && pg == page2)
+                        filtered.Add(f);
+                    continue;
+                }
+                filtered.Add(f);
+            }
+
+            return filtered;
+        }
+
+        private bool TryGetPage(Dictionary<string, object> field, out int page)
+        {
+            page = 0;
+            if (field == null) return false;
+            if (!field.TryGetValue("page", out var p) || p == null) return false;
+            if (p is int pi)
+            {
+                page = pi;
+                return true;
+            }
+            if (int.TryParse(p.ToString(), out var parsed))
+            {
+                page = parsed;
+                return true;
+            }
+            return false;
+        }
+
+        private string BuildNormalizedTextFromWords(List<Dictionary<string, object>> words, int startPage, int endPage)
+        {
+            if (words == null || words.Count == 0) return "";
+            var cfg = _tjpbCfg ?? new TjpbDespachoConfig();
+            var lineMergeY = cfg.Thresholds?.Paragraph?.LineMergeY ?? 0.015;
+            var wordGapX = cfg.Thresholds?.Paragraph?.WordGapX ?? cfg.TemplateRegions?.WordGapX ?? 0.012;
+
+            var sb = new StringBuilder();
+            for (int p = startPage; p <= endPage; p++)
+            {
+                var pageWords = new List<WordInfo>();
+                foreach (var w in words)
+                {
+                    if (!w.TryGetValue("page", out var pw) || pw == null) continue;
+                    if (!int.TryParse(pw.ToString(), out var page) || page != p) continue;
+                    var text = w.GetValueOrDefault("text")?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+                    pageWords.Add(new WordInfo
+                    {
+                        Text = text,
+                        NormX0 = Convert.ToSingle(w.GetValueOrDefault("nx0") ?? 0f),
+                        NormY0 = Convert.ToSingle(w.GetValueOrDefault("ny0") ?? 0f),
+                        NormX1 = Convert.ToSingle(w.GetValueOrDefault("nx1") ?? 0f),
+                        NormY1 = Convert.ToSingle(w.GetValueOrDefault("ny1") ?? 0f)
+                    });
+                }
+                if (pageWords.Count == 0) continue;
+                var pageText = TextUtils.BuildTextFromWords(pageWords, lineMergeY, wordGapX);
+                if (string.IsNullOrWhiteSpace(pageText)) continue;
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(pageText);
+            }
+            return sb.ToString().Trim();
+        }
+
+        private bool TryExtractVaraComarcaFromLine(string line, out string vara, out string comarca)
+        {
+            vara = "";
+            comarca = "";
+            if (string.IsNullOrWhiteSpace(line)) return false;
+            var l = Regex.Replace(line, @"\s+", " ").Trim();
+            l = Regex.Split(l, @"(?i)\brequerimento\b|\bsei\b|/\\s*pg").FirstOrDefault()?.Trim() ?? l;
+
+            var m = Regex.Match(l, @"(?i)ju[ií]zo\s+da\s+([^,\n]{3,80}?vara[^,\n]{0,40})\s+de\s+([A-Za-zÀ-ÿ\s\-]{3,80})");
+            if (m.Success)
+            {
+                vara = m.Groups[1].Value.Trim();
+                comarca = m.Groups[2].Value.Trim();
+            }
+            else
+            {
+                var m2 = Regex.Match(l, @"(?i)([0-9ªºA-Za-zÀ-ÿ\s]{3,80}?vara[^,\n]{0,40})\s+de\s+([A-Za-zÀ-ÿ\s\-]{3,80})");
+                if (m2.Success)
+                {
+                    vara = m2.Groups[1].Value.Trim();
+                    comarca = m2.Groups[2].Value.Trim();
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(vara))
+                vara = Regex.Replace(vara, @"\s*-\s*[A-Z]{2}$", "").Trim().TrimEnd('-', ',', '.');
+            if (!string.IsNullOrWhiteSpace(comarca))
+                comarca = Regex.Replace(comarca, @"\s*-\s*[A-Z]{2}$", "").Trim().TrimEnd('-', ',', '.');
+
+            return !string.IsNullOrWhiteSpace(vara) || !string.IsNullOrWhiteSpace(comarca);
+        }
+
+        private string TrimReqNome(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return value ?? "";
+            var trimmed = Regex.Split(value, @"(?i)\b1\.2\.2\b|\b1\.2\.3\b|\bendere[cç]o\b|\bcpf\b").FirstOrDefault() ?? value;
+            return trimmed.Trim().TrimEnd('-', ':', ';', ',', '.');
+        }
+
+        private string ExtractCpfCandidate(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return value ?? "";
+            var m = Regex.Match(value, @"\d{3}\.\d{3}\.\d{3}-\d{2}");
+            if (m.Success) return m.Value;
+            var digits = Regex.Replace(value, @"\D", "");
+            if (digits.Length >= 11) return digits.Substring(0, 11);
+            return value;
+        }
+
+        private List<string> BuildLinesFromWordDicts(List<Dictionary<string, object>> words, int startPage, int endPage)
+        {
+            var linesOut = new List<string>();
+            if (words == null || words.Count == 0) return linesOut;
+            var cfg = _tjpbCfg ?? new TjpbDespachoConfig();
+            var lineMergeY = cfg.Thresholds?.Paragraph?.LineMergeY ?? 0.015;
+            var wordGapX = cfg.Thresholds?.Paragraph?.WordGapX ?? cfg.TemplateRegions?.WordGapX ?? 0.012;
+
+            for (int p = startPage; p <= endPage; p++)
+            {
+                var pageWords = new List<WordInfo>();
+                foreach (var w in words)
+                {
+                    if (!w.TryGetValue("page", out var pw) || pw == null) continue;
+                    if (!int.TryParse(pw.ToString(), out var page) || page != p) continue;
+                    var text = w.GetValueOrDefault("text")?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+                    pageWords.Add(new WordInfo
+                    {
+                        Text = text,
+                        NormX0 = Convert.ToSingle(w.GetValueOrDefault("nx0") ?? 0f),
+                        NormY0 = Convert.ToSingle(w.GetValueOrDefault("ny0") ?? 0f),
+                        NormX1 = Convert.ToSingle(w.GetValueOrDefault("nx1") ?? 0f),
+                        NormY1 = Convert.ToSingle(w.GetValueOrDefault("ny1") ?? 0f)
+                    });
+                }
+                if (pageWords.Count == 0) continue;
+                var ordered = TextUtils.DeduplicateWords(pageWords)
+                    .OrderByDescending(w => (w.NormY0 + w.NormY1) / 2.0)
+                    .ThenBy(w => w.NormX0)
+                    .ToList();
+
+                var current = new List<WordInfo>();
+                double prevCy = double.MaxValue;
+                foreach (var w in ordered)
+                {
+                    var cy = (w.NormY0 + w.NormY1) / 2.0;
+                    if (current.Count == 0 || Math.Abs(cy - prevCy) <= lineMergeY)
+                    {
+                        current.Add(w);
+                    }
+                    else
+                    {
+                        var line = TextUtils.BuildLineText(current, wordGapX);
+                        if (!string.IsNullOrWhiteSpace(line)) linesOut.Add(line);
+                        current = new List<WordInfo> { w };
+                    }
+                    prevCy = cy;
+                }
+                if (current.Count > 0)
+                {
+                    var line = TextUtils.BuildLineText(current, wordGapX);
+                    if (!string.IsNullOrWhiteSpace(line)) linesOut.Add(line);
+                }
+            }
+            return linesOut;
+        }
+
+        private List<Dictionary<string, object>> ExtractRequerimentoFields(string fullText, List<Dictionary<string, object>> words, int startPage, int endPage)
+        {
+            var hits = new List<Dictionary<string, object>>();
+            if (string.IsNullOrWhiteSpace(fullText)) return hits;
+
+            var text = fullText;
+            var scanText = BuildNormalizedTextFromWords(words, startPage, endPage);
+            if (string.IsNullOrWhiteSpace(scanText))
+                scanText = TextUtils.CollapseSpacedLettersText(text);
+            var scanLines = BuildLinesFromWordDicts(words, startPage, endPage);
+            void AddReq(string name, string value, string pattern, double weight = 1.2)
+            {
+                value = value?.Trim() ?? "";
+                if (string.IsNullOrWhiteSpace(value)) return;
+                value = CleanStandard(name, value);
+                if (!ValidateStandard(name, value)) return;
+                var bbox = FindBBoxForBand(words, value);
+                int page = bbox?.page ?? startPage;
+                var hit = new Dictionary<string, object>
+                {
+                    ["name"] = name,
+                    ["value"] = value,
+                    ["page"] = page,
+                    ["pattern"] = pattern,
+                    ["weight"] = weight,
+                    ["method"] = "requerimento_extractor"
+                };
+                hit["bbox"] = bbox != null ? new Dictionary<string, double>
+                {
+                    ["nx0"] = bbox.Value.nx0,
+                    ["ny0"] = bbox.Value.ny0,
+                    ["nx1"] = bbox.Value.nx1,
+                    ["ny1"] = bbox.Value.ny1
+                } : null;
+                hits.Add(hit);
+            }
+
+            // Processo judicial (CNJ)
+            var mCnj = CnjRegex.Match(scanText);
+            if (mCnj.Success) AddReq("PROCESSO_JUDICIAL", mCnj.Value, "req_cnj", 1.25);
+
+            // Processo administrativo (SEI)
+            var mSei = Regex.Match(scanText, @"(?i)processo\s+administrativo\s*(?:sei\s*)?n[ºo]?\s*([0-9\.\-\/]{10,})");
+            if (mSei.Success) AddReq("PROCESSO_ADMINISTRATIVO", mSei.Groups[1].Value, "req_sei", 1.1);
+            var mPa = Regex.Match(scanText, @"(?i)processo\s+administrativo[\s\S]{0,80}?processo\s+n[ºo]\s*([0-9]{6,})");
+            if (mPa.Success) AddReq("PROCESSO_ADMINISTRATIVO", mPa.Groups[1].Value, "req_pa_num", 1.05);
+
+            // Vara / Comarca
+            var mUnidade = Regex.Match(scanText, @"(?i)unidade\s+judici[aá]ria\s+requisitante\s*[:\-]\s*([^\n]{6,140})");
+            if (mUnidade.Success && TryExtractVaraComarcaFromLine(mUnidade.Groups[1].Value, out var vUn, out var cUn))
+            {
+                if (!string.IsNullOrWhiteSpace(vUn)) AddReq("VARA", vUn, "req_unidade_requisitante", 1.2);
+                if (!string.IsNullOrWhiteSpace(cUn)) AddReq("COMARCA", cUn, "req_unidade_requisitante", 1.2);
+            }
+            if (!mUnidade.Success && scanLines.Count > 0)
+            {
+                foreach (var line in scanLines)
+                {
+                    if (!Regex.IsMatch(line, @"(?i)unidade\s+judici[aá]ria\s+requisitante")) continue;
+                    if (TryExtractVaraComarcaFromLine(line, out var vLine, out var cLine))
+                    {
+                        if (!string.IsNullOrWhiteSpace(vLine)) AddReq("VARA", vLine, "req_unidade_line", 1.15);
+                        if (!string.IsNullOrWhiteSpace(cLine)) AddReq("COMARCA", cLine, "req_unidade_line", 1.15);
+                        break;
+                    }
+                }
+            }
+            var mVaraComarca = Regex.Match(scanText, @"(?i)ju[ií]zo\s+(?:da|de)\s+([0-9ªºA-Za-zÀ-ÿ\s]{3,80}?vara[^,\n]{0,40})\s+da\s+comarca\s+de\s+([A-Za-zÀ-ÿ\s\-]{3,80})");
+            if (mVaraComarca.Success)
+            {
+                AddReq("VARA", mVaraComarca.Groups[1].Value, "req_vara_comarca", 1.2);
+                AddReq("COMARCA", mVaraComarca.Groups[2].Value, "req_vara_comarca", 1.2);
+            }
+            else
+            {
+                var mOrg = Regex.Match(scanText, @"(?i)órgão\s+julgador\s*:\s*([^\n]{3,80})");
+                if (mOrg.Success)
+                {
+                    var org = mOrg.Groups[1].Value.Trim();
+                    if (org.Contains("Vara", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var parts = org.Split(" de ", StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 2)
+                        {
+                            AddReq("VARA", parts[0].Trim(), "req_org_julgador", 1.1);
+                            AddReq("COMARCA", parts[1].Trim(), "req_org_julgador", 1.1);
+                        }
+                    }
+                }
+                var mComarca = Regex.Match(scanText, @"(?i)comarca\s+de\s+([A-Za-zÀ-ÿ\s\-]{3,80})");
+                if (mComarca.Success) AddReq("COMARCA", mComarca.Groups[1].Value, "req_comarca", 1.1);
+                var mVara = Regex.Match(scanText, @"(?i)(?:ju[ií]zo\s+da|vara)\s+([0-9ªºA-Za-zÀ-ÿ\s]{3,80}?vara[^,\n]{0,40})");
+                if (mVara.Success) AddReq("VARA", mVara.Groups[1].Value, "req_vara", 1.05);
+            }
+
+            // Perito + CPF
+            var mPeritoCpf = Regex.Match(scanText, @"(?i)(?:ao|à)\s+(?:sr\.?|sra\.?|senhor|senhora)\s+([^,\n]{3,80})\s*,\s*cpf\s*(?:n\.?|nº)?\s*([0-9\.\-]{11,14})");
+            if (mPeritoCpf.Success)
+            {
+                AddReq("PERITO", mPeritoCpf.Groups[1].Value, "req_perito_cpf", 1.35);
+                AddReq("CPF_PERITO", mPeritoCpf.Groups[2].Value, "req_perito_cpf", 1.35);
+            }
+            else
+            {
+                var mPeritoCpf2 = Regex.Match(scanText, @"(?i)perito\s+([^,\n]{3,80})\s*,\s*cpf\s*(?:n\.?|nº)?\s*([0-9\.\-]{11,14})");
+                if (mPeritoCpf2.Success)
+                {
+                    AddReq("PERITO", mPeritoCpf2.Groups[1].Value, "req_perito_cpf2", 1.2);
+                    AddReq("CPF_PERITO", mPeritoCpf2.Groups[2].Value, "req_perito_cpf2", 1.2);
+                }
+            }
+
+            // Nome / CPF em linhas separadas
+            var mNome = Regex.Match(scanText, @"(?i)\bnome\s*[:\-]\s*([^\n]{3,120}?)(?:\s+cpf|$)");
+            if (mNome.Success) AddReq("PERITO", TrimReqNome(mNome.Groups[1].Value), "req_nome", 1.25);
+            var mCpfLabel = Regex.Match(scanText, @"(?i)\bcpf\s*[:\-]\s*([0-9\. -]{11,20})");
+            if (mCpfLabel.Success) AddReq("CPF_PERITO", ExtractCpfCandidate(mCpfLabel.Groups[1].Value), "req_cpf_label", 1.15);
+
+            // Dr. <nome> aceitou o encargo...
+            var mDr = Regex.Match(scanText, @"(?i)dr\.?\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-Za-zÀ-ÿ\s]{3,80})\s*,\s*aceitou\s+o\s+encargo");
+            if (mDr.Success) AddReq("PERITO", mDr.Groups[1].Value, "req_dr_encargo", 1.1);
+
+            // Campos numerados do requerimento
+            var mNomeNum = Regex.Match(scanText, @"(?i)1\s*\.\s*2\s*\.\s*1\s*nome\s*[:\-]\s*([^\n]{3,120})");
+            if (mNomeNum.Success) AddReq("PERITO", TrimReqNome(mNomeNum.Groups[1].Value), "req_nome_1_2_1", 1.3);
+            var mCpfNum = Regex.Match(scanText, @"(?i)1\s*\.\s*2\s*\.\s*4\s*cpf\s*[:\-]\s*([0-9\. -]{11,20})");
+            if (mCpfNum.Success) AddReq("CPF_PERITO", ExtractCpfCandidate(mCpfNum.Groups[1].Value), "req_cpf_1_2_4", 1.3);
+            if (!mNomeNum.Success && scanLines.Count > 0)
+            {
+                foreach (var line in scanLines)
+                {
+                    if (!Regex.IsMatch(line, @"(?i)\b1\.2\.1\b.*\bnome\b")) continue;
+                    var mLine = Regex.Match(line, @"(?i)nome\s*[:\-]\s*([^\n]{3,120})");
+                    if (mLine.Success)
+                    {
+                        AddReq("PERITO", TrimReqNome(mLine.Groups[1].Value), "req_nome_line", 1.2);
+                        break;
+                    }
+                }
+            }
+            if (!mCpfNum.Success && scanLines.Count > 0)
+            {
+                foreach (var line in scanLines)
+                {
+                    if (!Regex.IsMatch(line, @"(?i)\b1\.2\.4\b.*\bcpf\b")) continue;
+                    var mLine = Regex.Match(line, @"(?i)cpf\s*[:\-]\s*([0-9\. -]{11,20})");
+                    if (mLine.Success)
+                    {
+                        AddReq("CPF_PERITO", ExtractCpfCandidate(mLine.Groups[1].Value), "req_cpf_line", 1.2);
+                        break;
+                    }
+                }
+            }
+
+            // CPF isolado (fallback)
+            var mCpf = CpfRegex.Match(scanText);
+            if (mCpf.Success) AddReq("CPF_PERITO", mCpf.Value, "req_cpf", 1.0);
+
+            // Especialidade / Espécie
+            var mEspLabel = Regex.Match(scanText, @"(?i)especialidade\s*[:\-]\s*([A-Za-zÀ-ÿ\s]{3,80})");
+            if (mEspLabel.Success) AddReq("ESPECIALIDADE", mEspLabel.Groups[1].Value, "req_especialidade_label", 1.1);
+            var mPeritoEsp = Regex.Match(scanText, @"(?i)perito\s+([A-Za-zÀ-ÿ\s]{3,40})\s*,\s*([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][^,\n]{3,80})");
+            if (mPeritoEsp.Success)
+            {
+                AddReq("ESPECIALIDADE", mPeritoEsp.Groups[1].Value, "req_perito_especialidade", 1.2);
+                AddReq("PERITO", mPeritoEsp.Groups[2].Value, "req_perito_especialidade", 1.1);
+            }
+            else
+            {
+                var mEsp = Regex.Match(scanText, @"(?i)perito\s+(?:judicial\s+)?(?:em\s+)?([A-Za-zÀ-ÿ\s]{3,40})");
+                if (mEsp.Success && IsLikelySpecialty(mEsp.Groups[1].Value))
+                    AddReq("ESPECIALIDADE", mEsp.Groups[1].Value, "req_especialidade", 1.05);
+            }
+
+            var mEspecie = Regex.Match(scanText, @"(?i)per[ií]cia\s+([A-Za-zÀ-ÿ\s]{3,40})");
+            if (mEspecie.Success && IsLikelySpecialty(mEspecie.Groups[1].Value))
+                AddReq("ESPECIE_DA_PERICIA", mEspecie.Groups[1].Value, "req_especie", 1.0);
+            var mEspecie2 = Regex.Match(scanText, @"(?i)esp[eé]cie\s+(?:da\s+)?per[ií]cia\s*[:\-]\s*([A-Za-zÀ-ÿ\s]{3,80})");
+            if (mEspecie2.Success && IsLikelySpecialty(mEspecie2.Groups[1].Value))
+                AddReq("ESPECIE_DA_PERICIA", mEspecie2.Groups[1].Value, "req_especie_label", 1.05);
+
+            // Valor arbitrado (JZ)
+            var mValor = Regex.Match(scanText, @"(?i)valor\s+arbitrad[oa][^\n]{0,60}?(?:R\$\s*)?([0-9\s\.]+,\s*[0-9\s]{2,})");
+            if (mValor.Success) AddReq("VALOR_ARBITRADO_JZ", mValor.Groups[1].Value, "req_valor_arbitrado", 1.35);
+            var mImporte = Regex.Match(scanText, @"(?i)importe[^\n]{0,80}?R\$\s*([0-9\s\.]+,\s*[0-9\s]{2,})");
+            if (mImporte.Success) AddReq("VALOR_ARBITRADO_JZ", mImporte.Groups[1].Value, "req_importe", 1.3);
+            var mHonor = Regex.Match(scanText, @"(?i)honor[aá]rios\s+periciais[^\n]{0,100}?R\$\s*([0-9\s\.]+,\s*[0-9\s]{2,})");
+            if (mHonor.Success) AddReq("VALOR_ARBITRADO_JZ", mHonor.Groups[1].Value, "req_honorarios", 1.2);
+            if (!mValor.Success && !mImporte.Success && !mHonor.Success)
+            {
+                IEnumerable<string> lines = scanLines.Count > 0 ? scanLines : scanText.Split('\n');
+                foreach (var line in lines)
+                {
+                    if (!Regex.IsMatch(line, @"(?i)valor\s+arbitrad")) continue;
+                    var mLine = Regex.Match(line, @"([0-9\s\.]+,\s*[0-9\s]{2,})");
+                    if (mLine.Success)
+                    {
+                        AddReq("VALOR_ARBITRADO_JZ", mLine.Groups[1].Value, "req_valor_line", 1.25);
+                        break;
+                    }
+                }
+            }
+
+            // Data / Assinante
+            var mAss = Regex.Match(scanText, @"(?i)assinado\s+eletronicamente\s+por\s*:\s*([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-Za-zÀ-ÿ\s]{3,80})");
+            if (mAss.Success) AddReq("ASSINANTE", mAss.Groups[1].Value, "req_assinante", 1.1);
+
+            var mDate = Regex.Match(scanText, @"(?i)(\d{1,2}\s+de\s+[A-Za-zçãéêíóôõú]+\s+de\s+\d{4})");
+            if (mDate.Success)
+            {
+                var iso = NormalizeDateFlexible(mDate.Groups[1].Value);
+                if (!string.IsNullOrWhiteSpace(iso))
+                    AddReq("DATA", iso, "req_data_extenso", 1.05);
+            }
+            else
+            {
+                var mDateNum = Regex.Match(scanText, @"\b\d{1,2}/\d{1,2}/\d{2,4}\b");
+                if (mDateNum.Success)
+                {
+                    var iso = NormalizeDateFlexible(mDateNum.Value);
+                    if (!string.IsNullOrWhiteSpace(iso))
+                        AddReq("DATA", iso, "req_data_num", 1.0);
+                }
+            }
+
+            return hits;
+        }
+
+        private bool IsLikelySpecialty(string value)
+        {
+            var v = NormalizeSimple(value);
+            if (string.IsNullOrWhiteSpace(v)) return false;
+            if (v.Length < 3 || v.Length > 40) return false;
+            if (Regex.IsMatch(v, @"\d")) return false;
+            if (v.Contains("cpf") || v.Contains("requerimento") || v.Contains("processo")) return false;
+            if (v.Contains("juiz") || v.Contains("vara") || v.Contains("comarca")) return false;
+            return true;
+        }
+
         private Dictionary<string, object> MakeBandHit(string field, string value, string pattern, List<Dictionary<string, object>> words, int fallbackPage, string band)
         {
             value = value?.Trim() ?? "";
@@ -2944,7 +4417,7 @@ namespace FilterPDF.Commands
 
         private bool IsPrincipal(string name, string text)
         {
-            string[] kws = { "despacho", "decisão", "decisao", "senten", "certidao", "certidão", "oficio", "ofício", "nota de empenho", "autorizacao", "autorização", "requisição", "requisicao" };
+            string[] kws = { "despacho", "decisão", "decisao", "senten", "certidao", "certidão", "oficio", "ofício", "nota de empenho", "autorizacao", "autorização", "requisição", "requisicao", "requerimento" };
             return kws.Any(k => name.Contains(k) || text.Contains(k));
         }
 
@@ -3104,6 +4577,183 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             return t.Trim();
         }
 
+        private string ExtractHeaderFromWords(List<Dictionary<string, object>> words, int page, double headerTopPct)
+        {
+            if (words == null || words.Count == 0) return "";
+            if (headerTopPct <= 0 || headerTopPct > 0.5) headerTopPct = 0.15;
+            double threshold = 1.0 - headerTopPct;
+
+            var pageWords = words.Where(w => Convert.ToInt32(w["page"]) == page).ToList();
+            if (pageWords.Count == 0) return "";
+
+            var lines = BuildLines(pageWords);
+            var headerLines = lines
+                .Where(l => l.NY0 >= threshold)
+                .OrderByDescending(l => l.NY0)
+                .Select(l => l.Text.Trim())
+                .Where(l => !string.IsNullOrWhiteSpace(l))
+                .Distinct()
+                .ToList();
+
+            if (headerLines.Count == 0)
+            {
+                headerLines = lines
+                    .OrderByDescending(l => l.NY0)
+                    .Select(l => l.Text.Trim())
+                    .Where(l => !string.IsNullOrWhiteSpace(l))
+                    .Distinct()
+                    .Take(3)
+                    .ToList();
+            }
+
+            return string.Join("\n", headerLines);
+        }
+
+        private string ExtractHeaderFromLines(List<LineInfo> lines, double headerTopPct)
+        {
+            if (lines == null || lines.Count == 0) return "";
+            if (headerTopPct <= 0 || headerTopPct > 0.5) headerTopPct = 0.15;
+            double threshold = 1.0 - headerTopPct;
+
+            var headerLines = lines
+                .Where(l => l.NormY0 >= threshold)
+                .OrderByDescending(l => l.NormY0)
+                .Select(l => l.Text.Trim())
+                .Where(l => !string.IsNullOrWhiteSpace(l))
+                .Distinct()
+                .ToList();
+
+            if (headerLines.Count == 0)
+            {
+                headerLines = lines
+                    .OrderByDescending(l => l.NormY0)
+                    .Select(l => l.Text.Trim())
+                    .Where(l => !string.IsNullOrWhiteSpace(l))
+                    .Distinct()
+                    .Take(3)
+                    .ToList();
+            }
+
+            return string.Join("\n", headerLines);
+        }
+
+        private string ExtractHeaderFromText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var lines = text.Split('\n')
+                .Select(l => l.Trim())
+                .Where(l => l.Length > 0)
+                .Take(3)
+                .ToList();
+            return string.Join("\n", lines);
+        }
+
+        private (string Header, string Subheader) ExtractHeaderAndSubheader(List<Dictionary<string, object>> words, int page, double headerTopPct)
+        {
+            if (words == null || words.Count == 0) return ("", "");
+            if (headerTopPct <= 0 || headerTopPct > 0.5) headerTopPct = 0.15;
+
+            var pageWords = words.Where(w => Convert.ToInt32(w["page"]) == page).ToList();
+            if (pageWords.Count == 0) return ("", "");
+
+            var lineObjs = BuildLines(pageWords);
+            if (lineObjs == null || lineObjs.Count == 0) return ("", "");
+
+            return ExtractHeaderAndSubheaderFromLines(lineObjs, headerTopPct);
+        }
+
+        private (string Header, string Subheader) ExtractHeaderAndSubheaderFromLines(List<LineObj> lines, double headerTopPct)
+        {
+            if (lines == null || lines.Count == 0) return ("", "");
+
+            var ordered = lines.OrderByDescending(l => l.NY0).ToList();
+            var scanTopPct = Math.Min(headerTopPct + 0.35, 0.6);
+            var scanThreshold = 1.0 - scanTopPct;
+            var scanLines = ordered
+                .Where(l => l.NY0 >= scanThreshold)
+                .Select(l => l.Text.Trim())
+                .Where(l => l.Length > 0)
+                .ToList();
+
+            var estadoLine = FindHeaderLine(scanLines, "ESTADODAPARAIBA");
+            var poderLine = FindHeaderLine(scanLines, "PODERJUDICIARIO");
+            var tribunalLine = FindHeaderLine(scanLines, "TRIBUNALDEJUSTICA");
+
+            var headerLines = new List<string>();
+            if (!string.IsNullOrWhiteSpace(estadoLine)) headerLines.Add(CanonicalHeaderLine(estadoLine, "ESTADO"));
+            if (!string.IsNullOrWhiteSpace(poderLine)) headerLines.Add(CanonicalHeaderLine(poderLine, "PODER"));
+            if (!string.IsNullOrWhiteSpace(tribunalLine)) headerLines.Add(CanonicalHeaderLine(tribunalLine, "TRIBUNAL"));
+            if (!string.IsNullOrWhiteSpace(tribunalLine) && NormalizeHeaderKey(tribunalLine).Contains("PARAIBA"))
+            {
+                headerLines = new List<string>
+                {
+                    "ESTADO DA PARAÍBA",
+                    "PODER JUDICIÁRIO",
+                    CanonicalHeaderLine(tribunalLine, "TRIBUNAL")
+                };
+            }
+
+            if (headerLines.Count < 2)
+            {
+                var headerThreshold = 1.0 - headerTopPct;
+                headerLines = ordered
+                    .Where(l => l.NY0 >= headerThreshold)
+                    .Select(l => l.Text.Trim())
+                    .Where(l => l.Length > 0)
+                    .Distinct()
+                    .Take(3)
+                    .ToList();
+            }
+
+            var header = string.Join("\n", headerLines);
+
+            // Subheader: procurar um pouco abaixo do topo (ex.: Diretoria Especial)
+            var headerBandMin = 1.0 - headerTopPct;
+            var subScanPct = Math.Min(headerTopPct + 0.12, 0.35);
+            var subThreshold = 1.0 - subScanPct;
+            var subLines = ordered
+                .Where(l => l.NY0 >= subThreshold && l.NY0 < (headerBandMin - 0.005))
+                .Select(l => l.Text.Trim())
+                .Where(l => l.Length > 0)
+                .ToList();
+
+            var diretoriaLine = subLines.FirstOrDefault(l => NormalizeHeaderKey(l).Contains("DIRETORIAESPECIAL") && l.Length <= 60);
+            var subHeader = !string.IsNullOrWhiteSpace(diretoriaLine)
+                ? "Diretoria Especial"
+                : subLines.FirstOrDefault(l =>
+                    !headerLines.Contains(l) &&
+                    !IsGeneric(l) &&
+                    !IsGenericNormalized(l) &&
+                    !IsCandidateTitle(l) &&
+                    !IsCandidateTitleNormalized(l));
+
+            return (header, subHeader ?? "");
+        }
+
+        private string FindHeaderLine(List<string> lines, string token)
+        {
+            if (lines == null || lines.Count == 0) return "";
+            return lines.FirstOrDefault(l => NormalizeHeaderKey(l).Contains(token)) ?? "";
+        }
+
+        private string NormalizeHeaderKey(string text)
+        {
+            var t = RemoveDiacritics(text ?? "").ToUpperInvariant();
+            t = Regex.Replace(t, @"[^A-Z]", "");
+            return t;
+        }
+
+        private string CanonicalHeaderLine(string line, string kind)
+        {
+            var norm = NormalizeHeaderKey(line);
+            if (kind == "ESTADO") return "ESTADO DA PARAÍBA";
+            if (kind == "PODER") return "PODER JUDICIÁRIO";
+            if (kind == "TRIBUNAL")
+                return norm.Contains("PARAIBA") ? "TRIBUNAL DE JUSTIÇA DA PARAÍBA" : "TRIBUNAL DE JUSTIÇA";
+            return line.Trim();
+        }
+
+
         private string Truncate(string text, int max)
         {
             if (string.IsNullOrEmpty(text) || max <= 0) return "";
@@ -3124,10 +4774,69 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             return label.Trim();
         }
 
-        private bool MatchesOrigin(Dictionary<string, object> docSummary, string docType)
+        private bool IsRequerimentoPagamentoHonorarios(string label, string? firstPageText, string? fullText)
         {
-            if (docSummary == null) return false;
-            var origin = $"{docSummary.GetValueOrDefault("origin_main")} {docSummary.GetValueOrDefault("origin_sub")} {docSummary.GetValueOrDefault("origin_extra")} {docSummary.GetValueOrDefault("title")}";
+            var normLabel = NormalizeSimple(label);
+            var bookmarkHint = normLabel.StartsWith("requerimento");
+
+            var firstChunk = firstPageText ?? "";
+            if (firstChunk.Length > 3000)
+                firstChunk = firstChunk.Substring(0, 3000);
+            var normFirst = NormalizeSimple(firstChunk);
+
+            var textOk = HasRequerimentoHeading(firstPageText)
+                         || MatchesRequerimentoSignals(normFirst);
+            if (!textOk)
+            {
+                var normFull = NormalizeSimple(fullText ?? "");
+                textOk = HasRequerimentoHeading(fullText) || MatchesRequerimentoSignals(normFull);
+            }
+
+            // Requerimento vem no bookmark; exige confirmação no texto interno
+            return bookmarkHint && textOk;
+        }
+
+        private bool MatchesRequerimentoSignals(string norm)
+        {
+            if (string.IsNullOrWhiteSpace(norm)) return false;
+            if (Regex.IsMatch(norm, @"requerimento\\s+de\\s+pagamento\\s+de\\s+honor"))
+                return true;
+            if (norm.Contains("requerimento") && norm.Contains("honor") && (norm.Contains("pagamento") || norm.Contains("pagamentos")))
+                return true;
+            if (norm.Contains("requerimento") && norm.Contains("honor") && (norm.Contains("solicito o pagamento") || norm.Contains("requisito o pagamento")))
+                return true;
+            if (Regex.IsMatch(norm, @"solicito\\s+o\\s+pagamento\\s+dos?\\s+honor"))
+                return true;
+            if (Regex.IsMatch(norm, @"cumprindo\\s+determina[cç][aã]o[\\s\\S]{0,80}?solicito\\s+o\\s+pagamento"))
+                return true;
+            return false;
+        }
+
+        private bool HasRequerimentoHeading(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            var lines = text.Split('\n').Select(l => NormalizeSimple(l)).Where(l => l.Length > 0).ToList();
+            foreach (var line in lines.Take(12))
+            {
+                if (line == "requerimento") return true;
+                if (line.StartsWith("requerimento de pagamento") && line.Contains("honor"))
+                    return true;
+            }
+            return false;
+        }
+
+        private string NormalizeSimple(string text)
+        {
+            var collapsed = TextUtils.CollapseSpacedLettersText(text ?? "");
+            var t = RemoveDiacritics(collapsed).ToLowerInvariant();
+            t = Regex.Replace(t, @"\\s+", " ").Trim();
+            return t;
+        }
+
+        private bool MatchesOrigin(Dictionary<string, object> docMeta, string docType)
+        {
+            if (docMeta == null) return false;
+            var origin = $"{docMeta.GetValueOrDefault("origin_main")} {docMeta.GetValueOrDefault("origin_sub")} {docMeta.GetValueOrDefault("origin_extra")} {docMeta.GetValueOrDefault("title")}";
             origin = RemoveDiacritics(origin ?? "").ToLowerInvariant();
             var cfg = _tjpbCfg ?? new TjpbDespachoConfig();
 
@@ -3137,7 +4846,10 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             else
                 hints = cfg.Anchors.Header.Concat(cfg.Anchors.Subheader).ToList();
 
-            if (hints == null || hints.Count == 0) return false;
+            if (hints == null || hints.Count == 0)
+            {
+                return !string.IsNullOrWhiteSpace(origin);
+            }
             foreach (var h in hints)
             {
                 if (string.IsNullOrWhiteSpace(h)) continue;
@@ -3147,14 +4859,17 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             return false;
         }
 
-        private bool MatchesSigner(Dictionary<string, object> docSummary)
+        private bool MatchesSigner(Dictionary<string, object> docMeta)
         {
-            if (docSummary == null) return false;
-            var signer = docSummary.GetValueOrDefault("signer")?.ToString() ?? "";
+            if (docMeta == null) return false;
+            var signer = docMeta.GetValueOrDefault("signer")?.ToString() ?? "";
             if (string.IsNullOrWhiteSpace(signer)) return false;
             var norm = RemoveDiacritics(signer).ToLowerInvariant();
             var cfg = _tjpbCfg ?? new TjpbDespachoConfig();
-            if (cfg.Anchors.SignerHints == null || cfg.Anchors.SignerHints.Count == 0) return false;
+            if (cfg.Anchors.SignerHints == null || cfg.Anchors.SignerHints.Count == 0)
+            {
+                return !string.IsNullOrWhiteSpace(signer);
+            }
             foreach (var h in cfg.Anchors.SignerHints)
             {
                 if (string.IsNullOrWhiteSpace(h)) continue;

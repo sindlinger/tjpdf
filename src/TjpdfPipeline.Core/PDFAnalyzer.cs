@@ -179,7 +179,9 @@ namespace FilterPDF
                 HasTables = false,
                 HasColumns = false,
                 AverageLineLength = CalculateAverageLineLength(text),
-                PageText = text
+                PageText = text,
+                PageTextRaw = "",
+                PageTextRawReady = false
             };
 
             textInfo.Fonts = ExtractAllPageFontsWithSizes(pageNum);
@@ -236,12 +238,108 @@ namespace FilterPDF
                             w.NormY1 = w.Y1 / pageHeight;
                         }
                     }
+
+                    var tabulated = BuildPageTextTabulated(textInfo.Words);
+                    if (!string.IsNullOrWhiteSpace(tabulated))
+                    {
+                        textInfo.PageTextRaw = tabulated;
+                        textInfo.PageTextRawReady = true;
+                        textInfo.PageText = tabulated;
+                        textInfo.CharacterCount = tabulated.Length;
+                        textInfo.LineCount = tabulated.Split('\n').Length;
+                        textInfo.AverageLineLength = CalculateAverageLineLength(tabulated);
+                        textInfo.Languages = DetectLanguages(tabulated);
+                    }
                 }
             }
             catch { }
 
+            if (!textInfo.PageTextRawReady)
+            {
+                // fallback: mantém o texto extraído, mesmo sem tabulação refinada
+                textInfo.PageText = textInfo.PageText ?? "";
+                textInfo.CharacterCount = textInfo.PageText.Length;
+                textInfo.LineCount = textInfo.PageText.Split('\n').Length;
+                textInfo.AverageLineLength = CalculateAverageLineLength(textInfo.PageText);
+                textInfo.Languages = DetectLanguages(textInfo.PageText);
+            }
+
             return textInfo;
         }
+
+        private string BuildPageTextTabulated(List<WordInfo> words, float yTolerance = 1.5f)
+        {
+            if (words == null || words.Count == 0) return string.Empty;
+
+            var lines = new List<List<WordInfo>>();
+            foreach (var w in words.OrderByDescending(w => w.Y0))
+            {
+                bool placed = false;
+                foreach (var line in lines)
+                {
+                    double ly = line.Average(x => x.Y0);
+                    if (Math.Abs(ly - w.Y0) <= yTolerance)
+                    {
+                        line.Add(w);
+                        placed = true;
+                        break;
+                    }
+                }
+                if (!placed)
+                    lines.Add(new List<WordInfo> { w });
+            }
+
+            var sb = new System.Text.StringBuilder();
+            foreach (var line in lines)
+            {
+                var ordered = line.OrderBy(w => w.X0).ToList();
+                if (ordered.Count == 0) continue;
+
+                var charWidths = ordered
+                    .Select(w => w.Text?.Length > 0 ? (double)(w.X1 - w.X0) / w.Text.Length : 0.0)
+                    .Where(v => v > 0)
+                    .ToList();
+
+                double avgChar = Median(charWidths);
+                if (avgChar <= 0) avgChar = ordered.Average(w => w.X1 - w.X0);
+                if (avgChar <= 0) avgChar = 1.0;
+
+                var lineText = new System.Text.StringBuilder();
+                WordInfo prev = null;
+                foreach (var w in ordered)
+                {
+                    if (prev != null)
+                    {
+                        double gap = w.X0 - prev.X1;
+                        if (gap > 0)
+                        {
+                            int spaces = (int)Math.Round(gap / avgChar);
+                            if (spaces < 1) spaces = 1;
+                            if (spaces > 40) spaces = 40;
+                            lineText.Append(' ', spaces);
+                        }
+                    }
+                    lineText.Append(w.Text);
+                    prev = w;
+                }
+
+                var rendered = lineText.ToString().TrimEnd();
+                if (rendered.Length == 0) continue;
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(rendered);
+            }
+
+            return sb.ToString();
+        }
+
+        private double Median(List<double> values)
+        {
+            if (values == null || values.Count == 0) return 0;
+            values.Sort();
+            int mid = values.Count / 2;
+            return values.Count % 2 == 0 ? (values[mid - 1] + values[mid]) / 2.0 : values[mid];
+        }
+
 
         private List<FontInfo> ExtractAllPageFontsWithSizes(int pageNum)
         {
@@ -877,6 +975,20 @@ namespace FilterPDF
                 }
             }
             catch { }
+            if (b.RootItems == null || b.RootItems.Count == 0)
+            {
+                try
+                {
+                    var fallback = ExtractBookmarksFromOutlinesDict();
+                    if (fallback.Count > 0)
+                    {
+                        b.RootItems = fallback;
+                        b.TotalCount = CountBookmarks(b.RootItems);
+                        b.MaxDepth = CalculateMaxDepth(b.RootItems);
+                    }
+                }
+                catch { }
+            }
             return b;
         }
 
@@ -928,6 +1040,63 @@ namespace FilterPDF
                     item.Destination.PageNumber = pageFromDest;
                 item.Children = ConvertOutline(child, level + 1);
                 items.Add(item);
+            }
+            return items;
+        }
+
+        private List<BookmarkItem> ExtractBookmarksFromOutlinesDict()
+        {
+            var items = new List<BookmarkItem>();
+            if (doc == null) return items;
+            try
+            {
+                var catalog = doc.GetCatalog().GetPdfObject();
+                var outlines = catalog?.GetAsDictionary(PdfName.Outlines);
+                var first = outlines?.GetAsDictionary(PdfName.First);
+                if (first != null)
+                    items = ConvertOutlineDict(first, 0);
+            }
+            catch { }
+            return items;
+        }
+
+        private List<BookmarkItem> ConvertOutlineDict(PdfDictionary item, int level = 0)
+        {
+            var items = new List<BookmarkItem>();
+            var current = item;
+            while (current != null)
+            {
+                string title = "";
+                var titleObj = current.Get(PdfName.Title);
+                if (titleObj is PdfString ps) title = ps.ToUnicodeString();
+                else if (titleObj != null) title = titleObj.ToString();
+
+                var destObj = current.Get(PdfName.Dest);
+                if (destObj == null)
+                {
+                    var action = current.GetAsDictionary(PdfName.A);
+                    var actionType = action?.GetAsName(PdfName.S);
+                    if (PdfName.GoTo.Equals(actionType))
+                        destObj = action?.Get(PdfName.D);
+                }
+
+                var pageFromDest = ResolveDestToPage(destObj);
+                if (pageFromDest <= 0) pageFromDest = 1;
+
+                var entry = new BookmarkItem
+                {
+                    Title = title ?? "",
+                    Level = level,
+                    IsOpen = false,
+                    Destination = new BookmarkDestination { PageNumber = pageFromDest, Type = "Destination" }
+                };
+
+                var first = current.GetAsDictionary(PdfName.First);
+                if (first != null)
+                    entry.Children = ConvertOutlineDict(first, level + 1);
+
+                items.Add(entry);
+                current = current.GetAsDictionary(PdfName.Next);
             }
             return items;
         }

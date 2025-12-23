@@ -1,10 +1,12 @@
 # Status do Pipeline TJPB (TJPDF)
 
-Atualizado em: **2025-12-21 05:20:55 -03**
+Atualizado em: **2025-12-23 11:30:32 -03**
 
 ## Contexto e objetivo (assuma este repositório a partir de agora)
 
 Estamos reconstruindo o pipeline TJPB no repositório atual **/mnt/c/git/tjpdf**. O objetivo central do projeto é **extrair campos estruturados (“fields”) com critérios rígidos**, sem adivinhação, e gerar **JSON confiável por processo/documento**, persistindo no Postgres (tabela `processes`, coluna `json`). Não há geração de arquivos intermediários por padrão.
+
+Mapa encapsulado do pipeline: `docs/PIPELINE_TJPB_CORE.md`
 
 Havia um repositório antigo mais completo (**/mnt/b/dev/sei-dashboard/fpdf-portable**), onde a ingestão, bookmarks e outras ferramentas estavam mais maduras. Parte dessa lógica foi portada, mas ainda precisamos garantir que o pipeline atual replique os comportamentos essenciais, especialmente **ingestão/merge e bookmarks**, pois a segmentação depende deles.
 
@@ -35,6 +37,34 @@ Havia um repositório antigo mais completo (**/mnt/b/dev/sei-dashboard/fpdf-port
 ### 3) Footer / Assinatura
 - Criado comando `footer` para inspecionar assinatura e datas.
 - Melhorada extração de **signer, signed_at e footer_signature_raw**.
+- `footer_signature_raw` agora pode vir do **band de rodapé** (words/coords) e não só do `lastPageText`.
+
+### 4) Exportação CSV (por processo)
+- `pipeline-tjpb --export-csv <caminho>` gera **CSV consolidado por processo** com campos principais.
+- Default: `./tjpb_export.csv` quando o caminho não é informado.
+
+### 5) Campos principais (ordem final para exportação)
+- PROCESSO_ADMINISTRATIVO
+- PROCESSO_JUDICIAL
+- COMARCA
+- VARA
+- PROMOVENTE *(autor do processo judicial)*
+- PROMOVIDO *(réu do processo judicial)*
+- PERITO
+- CPF_PERITO
+- ESPECIALIDADE
+- ESPECIE_DA_PERICIA
+- VALOR_ARBITRADO_JZ
+- VALOR_ARBITRADO_DE
+- VALOR_ARBITRADO_CM
+- VALOR_ARBITRADO_FINAL *(não é soma)*
+- DATA_ARBITRADO_FINAL
+
+Regra do valor arbitrado final:
+- Se houver CM, usa **VALOR_ARBITRADO_CM** e **data da decisão do Conselho**.
+- Senão, usa **VALOR_ARBITRADO_DE** e **data do despacho**.
+- Se não houver DE nem CM, usa **VALOR_ARBITRADO_JZ** e **data do despacho/requerimento**.
+- Assinatura/data agora considera texto colapsado (letras espaçadas) para capturar `signer` e `signed_at`.
 - Essas informações entram no JSON no nível do documento (origin_*, signer, signed_at, date_footer etc.).
 
 ### 4) Forense / Parágrafos / Bands
@@ -47,6 +77,10 @@ Havia um repositório antigo mais completo (**/mnt/b/dev/sei-dashboard/fpdf-port
   - `doc_pages`, `total_pages`
   - `text_density`, `blank_ratio`
   - `fonts` e `words` (com fonte/tamanho por palavra)
+
+### 5) Referências úteis (catálogos)
+- Catálogo de peritos ampliado (inclui arquivos adicionais em `src/PipelineTjpb/reference/peritos/`).
+- Fallback de espécie usando `laudos_por_especie*.csv` quando não há match de honorários.
 
 ---
 
@@ -66,6 +100,8 @@ Consolidar a reconstrução do pipeline com foco em **extração de fields** (de
   - bands
   - fields extraídos (inclusive via YAML)
 - Persistência no Postgres (processes.json).
+
+**Diretriz adicional (nova):** integrar todos os **ativos úteis** do repositório que contribuam para a extração dos campos (ex.: referências, heurísticas, tabelas e fontes auxiliares), sem trazer ruído desnecessário para o fluxo principal.
 
 ### Fields principais (alvo imediato)
 
@@ -101,6 +137,74 @@ Consolidar a reconstrução do pipeline com foco em **extração de fields** (de
 4) **Revisar lógica herdada do repositório antigo**
 - Extratores e comandos que ainda não foram portados.
 - Ajustar comportamentos inconsistentes entre o antigo e o atual.
+
+---
+
+## Pendências atuais (fields_missing por documento – sample)
+
+Base usada para checagem: `/tmp/tjpdf_test` (pipelines rodados com `--print-json`).
+
+### Despacho
+Campos ainda faltando:
+- PROCESSO_JUDICIAL
+- PERITO
+- CPF_PERITO
+- ESPECIALIDADE
+- ESPECIE_DA_PERICIA
+- COMARCA
+- VARA
+- VALOR_ARBITRADO_DE
+- VALOR_ARBITRADO_JZ
+
+### Certidão CM
+Campos ainda faltando:
+- VALOR_ARBITRADO_CM
+
+### Requerimento de Pagamento de Honorários
+Campos ainda faltando:
+- ESPECIALIDADE
+- ESPECIE_DA_PERICIA
+
+---
+
+## Inventário rápido de arquivos fora do pipeline (contagem)
+
+Base: `rg --files` (163 arquivos no repo).
+
+Critério: **pipeline** = fluxo oficial (`pipeline-tjpb`) + PDFAnalyzer + segmentação + extratores + configs + referências efetivamente carregadas.
+
+### Contagem
+- **Usados pelo pipeline**: 76
+- **Fora do pipeline**: 87
+
+### Que tipos estão fora do pipeline
+- **Comandos CLI de diagnóstico**: 17 arquivos  
+  (ex.: `pdf-objects`, `pdf-info`, `pdf-streams`, `footer`, etc.)
+- **Referências extras (amostras/HTML/ZIP)**: 62 arquivos  
+  (material de apoio não carregado pelo pipeline)
+- **Docs**: 5 arquivos
+- **Metadados de projeto**: 3 arquivos (`README`, `.sln`, `.csproj`)
+
+### Lista dos comandos CLI que não fazem parte do pipeline
+- `src/TjpdfPipeline.Cli/Commands/FpdfLoadCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/OptimizedPngExtractor.cs`
+- `src/TjpdfPipeline.Cli/Commands/Forensic/DeepPdfObjectAnalyzerCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/AnalyzePdfObjectStructureCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/BookmarkParagraphsCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/FetchBookmarkTitlesCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/FindToUnicodeCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/FooterCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/InspectPdfCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/InspectStreamsCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/PdfInfoCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/PdfObjectsCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/PdfStreamsCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/PdfUnicodeCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/ShowModDateCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/ToUnicodeExtractCommand.cs`
+- `src/TjpdfPipeline.Cli/Commands/Analysis/VisualizeStreamsCommand.cs`
+
+**Observação**: “fora do pipeline” não significa “pode apagar”. Muitos são úteis para debug/inspeção e referência.
 
 ---
 

@@ -137,6 +137,8 @@ namespace FilterPDF
         public List<string> Footers { get; set; } = new List<string>();
         public List<DocumentReference> DocumentReferences { get; set; } = new List<DocumentReference>();
         public string PageText { get; set; } = ""; // Texto completo da página para busca em cache
+        public string PageTextRaw { get; set; } = ""; // Texto tabulado (métrico) via words
+        public bool PageTextRawReady { get; set; } = false; // true quando PageTextRaw foi gerado por métrica
     }
     
     /// <summary>

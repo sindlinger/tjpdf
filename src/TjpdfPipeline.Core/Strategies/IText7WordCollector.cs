@@ -24,6 +24,7 @@ namespace FilterPDF.Strategies
 
             var chars = renderInfo.GetCharacterRenderInfos();
             var buffer = new List<TextRenderInfo>();
+            float letterGapHint = GetMedianGap(chars);
 
             foreach (var ch in chars)
             {
@@ -35,6 +36,12 @@ namespace FilterPDF.Strategies
                     FlushBuffer(buffer);
                     buffer.Clear();
                     continue;
+                }
+
+                if (buffer.Count > 0 && ShouldBreakWord(buffer[buffer.Count - 1], ch, letterGapHint))
+                {
+                    FlushBuffer(buffer);
+                    buffer.Clear();
                 }
 
                 buffer.Add(ch);
@@ -90,6 +97,67 @@ namespace FilterPDF.Strategies
                 X1 = x1,
                 Y1 = y1
             });
+        }
+
+        private bool ShouldBreakWord(TextRenderInfo prev, TextRenderInfo curr, float letterGapHint)
+        {
+            float gap = GetGap(prev, curr);
+            if (gap <= 0) return false;
+            float threshold = letterGapHint > 0
+                ? (IsSingleToken(prev) && IsSingleToken(curr) ? letterGapHint * 2.2f : letterGapHint * 1.15f)
+                : GetSpaceThreshold(prev);
+            return gap > threshold;
+        }
+
+        private float GetGap(TextRenderInfo prev, TextRenderInfo curr)
+        {
+            float prevEnd = prev.GetAscentLine().GetEndPoint().Get(Vector.I1);
+            float currStart = curr.GetBaseline().GetStartPoint().Get(Vector.I1);
+            return currStart - prevEnd;
+        }
+
+        private float GetMedianGap(IList<TextRenderInfo> chars)
+        {
+            if (chars == null || chars.Count < 2) return 0;
+            var gaps = new List<float>();
+            for (int i = 1; i < chars.Count; i++)
+            {
+                var a = chars[i - 1];
+                var b = chars[i];
+                var ta = a.GetText();
+                var tb = b.GetText();
+                if (string.IsNullOrWhiteSpace(ta) || string.IsNullOrWhiteSpace(tb)) continue;
+                float gap = GetGap(a, b);
+                if (gap > 0) gaps.Add(gap);
+            }
+            if (gaps.Count == 0) return 0;
+            gaps.Sort();
+            int mid = gaps.Count / 2;
+            return gaps.Count % 2 == 0 ? (gaps[mid - 1] + gaps[mid]) / 2f : gaps[mid];
+        }
+
+        private float GetSpaceThreshold(TextRenderInfo info)
+        {
+            float fontSize = GetFontSize(info);
+            float space = 0;
+            try { space = info.GetSingleSpaceWidth(); } catch { space = 0; }
+            if (space <= 0) space = fontSize * 0.3f;
+            return Math.Max(space * 0.9f, fontSize * 0.35f);
+        }
+
+        private float GetFontSize(TextRenderInfo info)
+        {
+            return Math.Abs(info.GetAscentLine().GetStartPoint().Get(Vector.I2) -
+                            info.GetDescentLine().GetStartPoint().Get(Vector.I2));
+        }
+
+        private bool IsSingleToken(TextRenderInfo info)
+        {
+            if (info == null) return false;
+            var t = info.GetText() ?? "";
+            t = t.Trim();
+            if (t.Length != 1) return false;
+            return !char.IsWhiteSpace(t[0]);
         }
 
         public ICollection<EventType> GetSupportedEvents()

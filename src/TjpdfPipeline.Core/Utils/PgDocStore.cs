@@ -411,14 +411,11 @@ namespace FilterPDF.Utils
                 string docType = Clean(GetStr(doc, "doc_type"));
                 string docKey = BuildDocKeySafe(label, seq, GetInt(doc, "start_page", 1));
 
-                var summary = doc;
-                if (doc.TryGetValue("doc_summary", out var dsObj) && dsObj is Dictionary<string, object> ds)
-                    summary = ds;
-                string headerOrigin = Clean(GetStr(summary, "origin_main"));
-                string headerTitle = Clean(GetStr(summary, "origin_sub"));
-                string headerSubtitle = Clean(GetStr(summary, "origin_extra"));
-                var signer = GetStr(summary, "signer");
-                DateTime? signedAt = ParseDate(GetStr(summary, "signed_at"));
+                string headerOrigin = Clean(GetStr(doc, "origin_main"));
+                string headerTitle = Clean(GetStr(doc, "origin_sub"));
+                string headerSubtitle = Clean(GetStr(doc, "origin_extra"));
+                var signer = GetStr(doc, "signer");
+                DateTime? signedAt = ParseDate(GetStr(doc, "signed_at"));
                 string footerRaw = GetStr(doc, "footer");
 
                 int startPage = GetInt(doc, "start_page", 1);
@@ -445,7 +442,7 @@ namespace FilterPDF.Utils
                 cmd.Parameters.AddWithValue("@key", docKey);
                 cmd.Parameters.AddWithValue("@label", label ?? "");
                 cmd.Parameters.AddWithValue("@type", string.IsNullOrWhiteSpace(docType) ? "outros" : docType);
-                cmd.Parameters.AddWithValue("@sub", GetStr(summary, "template") ?? "outros");
+                cmd.Parameters.AddWithValue("@sub", GetStr(doc, "template") ?? "outros");
                 cmd.Parameters.AddWithValue("@sp", startPage);
                 cmd.Parameters.AddWithValue("@ep", endPage);
                 cmd.Parameters.Add("@meta", NpgsqlDbType.Jsonb).Value = meta;

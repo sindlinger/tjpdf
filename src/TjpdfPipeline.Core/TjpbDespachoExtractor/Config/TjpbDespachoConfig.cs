@@ -43,7 +43,7 @@ namespace FilterPDF.TjpbDespachoExtractor.Config
 
     public class ThresholdsConfig
     {
-        public double DensityMin { get; set; } = 0.20;
+        public double DensityMin { get; set; } = 0.15;
         public int MinPages { get; set; } = 2;
         public int MaxPages { get; set; } = 6;
         public BandsConfig Bands { get; set; } = new BandsConfig();

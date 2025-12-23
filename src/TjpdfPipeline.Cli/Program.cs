@@ -71,9 +71,33 @@ namespace TjpdfPipeline.Cli
                 cmd.Execute(cmdArgs);
                 return 0;
             }
+            if (cmdName.Equals("tjpb-s1", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new TjpbStage1Command();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
+            if (cmdName.Equals("tjpb-s2", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new TjpbStage2Command();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
+            if (cmdName.Equals("tjpb-s3", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new TjpbStage3Command();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
             if (cmdName.Equals("fetch-bookmark-titles", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = new FetchBookmarkTitlesCommand();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
+            if (cmdName.Equals("bookmark-paragraphs", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new BookmarkParagraphsCommand();
                 cmd.Execute(cmdArgs);
                 return 0;
             }
@@ -95,7 +119,11 @@ namespace TjpdfPipeline.Cli
             Console.WriteLine("tjpdf-cli show-moddate --input file.pdf");
             Console.WriteLine("tjpdf-cli footer --input file.pdf [--page N] [--all] [--tail-lines N] [--json]");
             Console.WriteLine("tjpdf-cli preprocess-inputs --input-dir <dir> [--out-dir <dir>] [--max N] [--per-process-dir] [--flat]");
+            Console.WriteLine("tjpdf-cli tjpb-s1 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-json]");
+            Console.WriteLine("tjpdf-cli tjpb-s2 --input-dir <dir> [--out <file>] [--print-json]");
+            Console.WriteLine("tjpdf-cli tjpb-s3 [--input-dir <dir>] [--input-manifest <file>] [--out-dir <dir>] [--max N] [--print-summary]");
             Console.WriteLine("tjpdf-cli fetch-bookmark-titles --input-file <pdf> [--json] [--tree]");
+            Console.WriteLine("tjpdf-cli bookmark-paragraphs --input-file <pdf> [--bookmark <texto>] [--all] [--first] [--last] [--json]");
             Console.WriteLine("tjpdf-cli pdf-unicode list --input file.pdf");
             Console.WriteLine("tjpdf-cli pdf-unicode dump --input file.pdf");
         }
