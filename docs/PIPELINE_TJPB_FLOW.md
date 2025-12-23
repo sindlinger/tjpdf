@@ -1,6 +1,6 @@
 # Fluxo Detalhado do Pipeline TJPB (TJPDF)
 
-Atualizado em: **2025-12-23 12:17:31 -03**
+Atualizado em: **2025-12-23 12:29:13 -03**
 
 Este documento descreve **o caminho completo** dos arquivos e a execução do pipeline **desde a ingestão**, até a geração do JSON e a persistência no Postgres. O objetivo é servir como referência única para o time (e para agentes) sobre **como o pipeline realmente opera** hoje.
 
@@ -14,12 +14,12 @@ Mapa encapsulado (visão macro): `docs/PIPELINE_TJPB_CORE.md`
 [S1 Input Dir]
    |
    v
-[S2 Preprocess ZIP?]
-   |-- yes --> [S2a Merge PDFs + Bookmarks] --> [S2b Process Folder + PDF]
-   |-- no  ------------------------------------> [S2b Process Folder + PDF]
+[S1 Preprocess ZIP?]
+   |-- yes --> [S1a Merge PDFs + Bookmarks] --> [S1b Process Folder + PDF]
+   |-- no  ------------------------------------> [S1b Process Folder + PDF]
                      |
                      v
-              [S3 PDFAnalyzer]
+[S2 PDFAnalyzer]
                      |
                      v
            [S4 Try Bookmarks]
@@ -111,56 +111,7 @@ Padronizar a entrada em **uma pasta por processo** contendo **um único PDF** (m
 
 ## 2) Entrada e resolução de diretórios
 
-### S2 — Resolução do input (PDF vs cache)
-
-**Objetivo**  
-Decidir **de onde ler** (PDFs ou JSON de cache) e montar a lista final de fontes para análise.
-
-**O que acontece aqui**:
-1. Varre o diretório final de entrada (após S1).  
-2. Se **existirem PDFs**, usa os PDFs como fonte.  
-3. Se **existirem apenas JSONs**, entra em modo cache.  
-4. Define a lista `sources` (PDFs ou JSONs) que será enviada ao PDFAnalyzer.
-
-**Entrega (saída da etapa)**  
-- Lista **ordenada** de fontes (`sources`), que alimenta a análise:
-  - PDFs reais **ou**
-  - JSONs de cache.
-
-**Comando principal**: `pipeline-tjpb`
-- Arquivo: `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
-
-**Entrada**:
-- `--input-dir <dir>` define o diretório base.
-- Se **existirem ZIPs** em qualquer subpasta do input, o pipeline **cria um diretório temporário** e faz o merge automático.
-  - Direto no `pipeline-tjpb`: método `PreprocessZipInbox`.
-  - Saída em `Path.GetTempPath()/tjpdf-preprocess-<guid>`.
-- Se **não houver ZIP**, o pipeline usa diretamente o input-dir.
-
-**Arquivos envolvidos**  
-- `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`  
-  - `Execute(...)` (seleção PDF vs cache)  
-  - `ContainsZipFiles(...)` (check inicial)  
-
-**Regras de processo**:
-- O número do processo é extraído do **nome do arquivo** (`DeriveProcessName`) usando regex de dígitos.
-- Em ZIP: cada entrada `.pdf` vira um bookmark e o ZIP inteiro vira um PDF único com bookmarks.
-- Em PDF solto: o arquivo é copiado (ou usado diretamente).
-
-**Cache**:
-- Se o input contiver **somente `.json`** e nenhum `.pdf`, o pipeline lê do cache JSON em vez de reanalisar o PDF.
-
-**Arquivos e funções (repo)**:
-- `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
-  - `Execute(...)` (parse args + orquestra)
-  - `ContainsZipFiles(...)`
-  - `PreprocessZipInbox(...)`
-  - `MergeZipToPdf(...)`
-  - `DeriveProcessName(...)`
-
----
-
-## 3) Abertura e análise do PDF (PDFAnalyzer)
+## 2) Abertura e análise do PDF (PDFAnalyzer)
 
 **Arquivo**: `src/TjpdfPipeline.Core/PDFAnalyzer.cs`
 
@@ -223,12 +174,11 @@ Esse resultado **é a base de tudo que vem depois**.
 Use estes comandos para validar cada etapa isoladamente:
 
 - `tjpb-s1` → executa **S1** e gera `stage1_manifest.json`
-- `tjpb-s2` → executa **S2** e gera `stage2_sources.json`
-- `tjpb-s3` → executa **S3** e gera `stage3_outputs.json`
+- `tjpb-s3` → executa **S2** (RAW/PDFAnalyzer) e gera `stage3_outputs.json`
 
 ---
 
-## 4) Segmentação de documentos (Bookmarks vs Heurística)
+## 3) Segmentação de documentos (Bookmarks vs Heurística)
 
 **Arquivo**: `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
 

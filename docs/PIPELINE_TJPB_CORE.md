@@ -44,105 +44,102 @@ Extrair **fields estruturados** (despacho, certidão CM e requerimento) com crit
 [S1 Input Dir]
    |
    v
-[S2 Preprocess ZIP?]
-   |-- yes --> [S2a Merge PDFs + Bookmarks] --> [S2b Process Folder + PDF]
-   |-- no  ------------------------------------> [S2b Process Folder + PDF]
+[S1 Preprocess ZIP?]
+   |-- yes --> [S1a Merge PDFs + Bookmarks] --> [S1b Process Folder + PDF]
+   |-- no  ------------------------------------> [S1b Process Folder + PDF]
                      |
                      v
-              [S3 PDFAnalyzer]
+             [S2 PDFAnalyzer]
                      |
                      v
-           [S4 Try Bookmarks]
+           [S3 Try Bookmarks]
                  |
                  v
-        {S4? Bookmarks encontrados?}
+        {S3? Bookmarks encontrados?}
            |               |
           sim             nao
            |               |
            v               v
- [S5 Boundaries (bookmarks)] [S6 DocumentSegmenter]
+ [S4 Boundaries (bookmarks)] [S5 DocumentSegmenter]
            |               |
-           +-------> [S7 Document Boundaries]
+           +-------> [S6 Document Boundaries]
                      |
                      v
-     [S8 BuildDocObject (DTO por documento)]
+     [S7 BuildDocObject (DTO por documento)]
           |   - monta chaves de header/footer/origem/assinatura no DTO
           |   - define doc_label/doc_type
           |   - valida despacho/certidão/requerimento
           v
-   [S9 Field Extraction (YAML + Directed + Specialized)]
+   [S8 Field Extraction (YAML + Directed + Specialized)]
                      |
                      v
-             [S10 JSON per Document]
+             [S9 JSON per Document]
                      |
                      v
-               [S11 Postgres Persist]
+               [S10 Postgres Persist]
 ```
 
 ---
 
 ## Até o DTO (ordem real)
 
-1) **[S4→S7] Bookmarks → Boundaries**
+1) **[S3→S6] Bookmarks → Boundaries**
    - `BuildBookmarkBoundaries` cria `DocumentBoundary`.
    - **Sanitiza o título** com `SanitizeBookmarkTitle` (antes do DTO).
 
-2) **[S8] BuildDocObject (DTO)**
+2) **[S7] BuildDocObject (DTO)**
    - monta chaves de header/footer/origem/assinatura diretamente no DTO.
    - define `doc_label` e `doc_type`.
    - identifica **despacho / certidão / requerimento**.
 
-3) **[S9] Extração de fields**
+3) **[S8] Extração de fields**
    - YAML + heurísticas dirigidas + extratores especializados (mesma etapa).
 
 ---
 
 ## Núcleos do pipeline (o que faz + onde está)
 
-**S1** **Entrada (Input Dir)**
-   - **Função**: diretório base a ser processado.
-
-**S2** **Ingestão / Pré-processamento (ZIP)**
+**S1** **Ingestão / Pré-processamento (ZIP)**
    - **Função**: detectar ZIP, descompactar, mergear PDFs, criar bookmarks por arquivo.
    - **Saídas**: `<processo>.pdf` + lista de origem (`<processo>_arquivos.txt`).
    - **Arquivos**:
      - `src/TjpdfPipeline.Cli/Commands/PreprocessInputsCommand.cs`
      - `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs` (PreprocessZipInbox)
 
-**S3** **Análise do PDF (base de tudo)**
+**S2** **Análise do PDF (base de tudo)**
    - **Função**: texto, palavras/coords, headers/footers, bookmarks, assinaturas.
    - **Saída**: `PDFAnalysisResult` + `BookmarksFlat`.
    - **Arquivo**:
      - `src/TjpdfPipeline.Core/PDFAnalyzer.cs`
 
-**S4–S7** **Segmentação de documentos**
+**S3–S6** **Segmentação de documentos**
    - **Função**: criar boundaries por bookmark; fallback heurístico se não houver.
    - **Arquivos**:
      - `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs` (BuildBookmarkBoundaries)
      - `src/TjpdfPipeline.Core/Utils/DocumentSegmenter.cs` (fallback)
      - `src/TjpdfPipeline.Core/Models/DocumentSegmentationConfig.cs` (config do segmenter)
 
-**S8** **DTO + seleção do documento (despacho/certidão/requerimento)**
+**S7** **DTO + seleção do documento (despacho/certidão/requerimento)**
    - **Função**: sanitizar títulos, aplicar critérios (páginas, origem, assinatura, densidade).
    - **Arquivos**:
      - `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs` (SanitizeBookmarkTitle, MatchesOrigin, MatchesSigner)
      - `configs/config.yaml` (anchors, thresholds, signerHints)
 
-**S9** **Extração de campos**
+**S8** **Extração de campos**
    - **Função**: executar scripts e heurísticas dirigidas.
    - **Arquivos**:
      - `configs/fields/*.yml`
      - `src/TjpdfPipeline.Core/Utils/FieldScripts.cs`
      - `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs` (ExtractFields / ExtractDirectedValues)
 
-**S9a** **Extração especializada (despacho/certidão)**
+**S8a** **Extração especializada (despacho/certidão)**
    - **Função**: regras portadas do pipeline antigo.
    - **Arquivos**:
      - `src/TjpdfPipeline.Core/TjpbDespachoExtractor/Extraction/DespachoExtractor.cs`
      - `src/TjpdfPipeline.Core/TjpbDespachoExtractor/Extraction/FieldExtractor.cs`
      - `src/TjpdfPipeline.Core/TjpbDespachoExtractor/Extraction/CertidaoExtraction.cs`
 
-**S9b** **Referências / Catálogos**
+**S8b** **Referências / Catálogos**
    - **Função**: normalização e enriquecimento de campos.
    - **Arquivos**:
      - `src/PipelineTjpb/reference/peritos/*`
@@ -150,10 +147,10 @@ Extrair **fields estruturados** (despacho, certidão CM e requerimento) com crit
      - `src/PipelineTjpb/reference/laudos_hashes/*`
      - `src/PipelineTjpb/reference/laudos/laudos_por_especie*.csv`
 
-**S10** **JSON por documento**
+**S9** **JSON por documento**
    - **Função**: payload final do documento (DTO + fields + forensics).
 
-**S11** **Persistência**
+**S10** **Persistência**
    - **Função**: gravar JSON no Postgres (processes.json).
    - **Arquivo**:
      - `src/TjpdfPipeline.Core/Utils/PgDocStore.cs`

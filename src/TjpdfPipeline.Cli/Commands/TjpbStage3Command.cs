@@ -18,7 +18,6 @@ namespace FilterPDF.Commands
         public override void Execute(string[] args)
         {
             string inputDir = ".";
-            string inputManifest = "";
             string outDir = Path.Combine(Directory.GetCurrentDirectory(), "stage3_out");
             int? maxFiles = null;
             bool printSummary = false;
@@ -27,13 +26,12 @@ namespace FilterPDF.Commands
             {
                 if (args[i] == "--help" || args[i] == "-h") { ShowHelp(); return; }
                 if (args[i] == "--input-dir" && i + 1 < args.Length) inputDir = args[i + 1];
-                if (args[i] == "--input-manifest" && i + 1 < args.Length) inputManifest = args[i + 1];
                 if (args[i] == "--out-dir" && i + 1 < args.Length) outDir = args[i + 1];
                 if (args[i] == "--max" && i + 1 < args.Length && int.TryParse(args[i + 1], out var m)) maxFiles = m;
                 if (args[i] == "--print-summary") printSummary = true;
             }
 
-            var sources = ResolveSources(inputDir, inputManifest);
+            var sources = ResolveSources(inputDir);
             Directory.CreateDirectory(outDir);
 
             var outputs = new List<Dictionary<string, string>>();
@@ -88,31 +86,12 @@ namespace FilterPDF.Commands
 
         public override void ShowHelp()
         {
-            Console.WriteLine("tjpdf-cli tjpb-s3 [--input-dir <dir>] [--input-manifest <file>] [--out-dir <dir>] [--max N] [--print-summary]");
+            Console.WriteLine("tjpdf-cli tjpb-s3 [--input-dir <dir>] [--out-dir <dir>] [--max N] [--print-summary]");
             Console.WriteLine("Executa o PDFAnalyzer e grava JSON por arquivo (ou copia JSON de cache).");
         }
 
-        private SourceManifest ResolveSources(string inputDir, string inputManifest)
+        private SourceManifest ResolveSources(string inputDir)
         {
-            if (!string.IsNullOrWhiteSpace(inputManifest) && File.Exists(inputManifest))
-            {
-                var json = File.ReadAllText(inputManifest);
-                var parsed = JsonConvert.DeserializeObject<Dictionary<string, object>>(json) ?? new Dictionary<string, object>();
-                var mode = parsed.TryGetValue("mode", out var m) ? m?.ToString() ?? "pdf" : "pdf";
-                var items = new List<SourceItem>();
-                if (parsed.TryGetValue("sources", out var srcObj) && srcObj is Newtonsoft.Json.Linq.JArray arr)
-                {
-                    foreach (var token in arr)
-                    {
-                        var path = token["path"]?.ToString() ?? "";
-                        var proc = token["process"]?.ToString() ?? DeriveProcessName(path);
-                        if (!string.IsNullOrWhiteSpace(path))
-                            items.Add(new SourceItem { Path = path, Process = proc });
-                    }
-                }
-                return new SourceManifest { Mode = mode, Items = items };
-            }
-
             inputDir = Path.GetFullPath(inputDir);
             var pdfs = Directory.GetFiles(inputDir, "*.pdf", SearchOption.AllDirectories).OrderBy(p => p).ToList();
             var jsons = Directory.GetFiles(inputDir, "*.json", SearchOption.AllDirectories).OrderBy(p => p).ToList();

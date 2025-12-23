@@ -43,6 +43,6 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 - Fallback de `ESPECIE_DA_PERICIA`: usa referência `laudos_por_especie_*.csv` quando não há match de honorários.
 - `pipeline-tjpb`: nova opção `--export-csv` para gerar CSV consolidado por processo (campos principais).
 - CSV (campos principais): adicionados **PROMOVENTE/PROMOVIDO** e regra de **VALOR_ARBITRADO_FINAL/DATA_ARBITRADO_FINAL** (não é soma).
-- Comandos de etapa adicionados: `tjpb-s1`, `tjpb-s2`, `tjpb-s3` (validação progressiva por etapa).
+- Comandos de etapa adicionados: `tjpb-s1` e `tjpb-s3` (validação progressiva por etapa).
 - PDFAnalyzer: bookmarks agora têm fallback por `/Outlines` (mesma lógica do fetch-bookmark-titles).
 - PDFAnalyzer: texto tabulado mantém fallback para texto extraído (não zera quando a tabulação falha).
