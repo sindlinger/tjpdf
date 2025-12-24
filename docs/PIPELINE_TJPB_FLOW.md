@@ -56,14 +56,74 @@ Mapa encapsulado (visão macro): `docs/PIPELINE_TJPB_CORE.md`
 
 **Nota:** a etapa **S3** engloba os procedimentos internos **S3a–S3c** (bookmarks vs heurística + boundaries). O DTO começa em **S7** (BuildDocObject).
 
+---
+
+## Fluxograma (Mermaid)
+
+```mermaid
+flowchart TD
+  S1["S1 Input Dir"] --> S1p["S1 Preprocess ZIP?"]
+  S1p -->|yes| S1a["S1a Merge PDFs + Bookmarks"]
+  S1a --> S1b["S1b Process Folder + PDF"]
+  S1p -->|no| S1b
+  S1b --> S2["S2 PDFAnalyzer"]
+  S2 --> S3["S3 Segmentação (etapa única)"]
+  S3 --> Q{"Bookmarks encontrados?"}
+  Q -->|sim| S3a["S3a Boundaries via Bookmarks"]
+  Q -->|não| S3b["S3b DocumentSegmenter (heurística)"]
+  S3a --> S3c["S3c Document Boundaries"]
+  S3b --> S3c
+  S3c --> S7["S7 BuildDocObject (DTO)"]
+  S7 --> S8["S8 Field Extraction (YAML + Directed + Specialized)"]
+  S8 --> S9["S9 JSON per Document"]
+  S9 --> S10["S10 Postgres Persist"]
+```
+
+---
+
+## Sequence (Mermaid)
+
+```mermaid
+sequenceDiagram
+  participant CLI as tjpdf-cli
+  participant S1 as S1 PreprocessInputs
+  participant S2 as PDFAnalyzer
+  participant BM as BookmarkExtractor
+  participant SEG as DocumentSegmenter
+  participant S7 as BuildDocObject
+  participant S8 as FieldExtraction
+  participant OUT as JSON/PG
+
+  CLI->>S1: (opcional) preprocess ZIP/PDF
+  S1-->>CLI: 1 PDF por processo
+  CLI->>S2: AnalyzeFull()
+  S2->>BM: Extract bookmark outline (iText)
+  BM-->>S2: Bookmarks + BookmarksFlat
+  S2-->>CLI: PDFAnalysisResult
+
+  alt Bookmarks encontrados
+    CLI->>CLI: BuildBookmarkBoundaries()
+  else Sem bookmarks
+    CLI->>SEG: FindDocuments()
+    SEG-->>CLI: DocumentBoundary[]
+  end
+
+  CLI->>S7: BuildDocObject(boundaries)
+  S7-->>CLI: DTO por documento
+  CLI->>S8: Extract fields (YAML/Directed/Specialized)
+  S8-->>CLI: Fields normalizados
+  CLI->>OUT: JSON / Persistência PG
+```
+
 ### S3 — Núcleo (arquivos e funções)
 
 **Bookmarks (quando existem)**
-- **Extração/flatten do outline**: `src/TjpdfPipeline.Core/PDFAnalyzer.cs`
+- **Extração/flatten do outline** (usa **iText**): `src/TjpdfPipeline.Core/PDFAnalyzer.cs`
   - `ExtractBookmarkStructure()`, `FlattenBookmarks(...)`
-- **Parser de outline**: `src/TjpdfPipeline.Core/Utils/BookmarkExtractor.cs`
+- **Parser de outline** (iText `/Outlines`, `/Dests`, `/Names`): `src/TjpdfPipeline.Core/Utils/BookmarkExtractor.cs`
 - **Conversão em boundaries**: `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
   - `ExtractBookmarksForRange(...)`, `BuildBookmarkBoundaries(...)`
+> **Observação**: a pipeline **usa o mesmo core** do `fetch-bookmark-titles` (PDFAnalyzer + BookmarkExtractor), lendo **títulos e páginas** dos bookmarks via iText.
 
 **DocumentSegmenter (quando não há bookmarks)**
 - **Heurísticas de segmentação**: `src/TjpdfPipeline.Core/Utils/DocumentSegmenter.cs`
