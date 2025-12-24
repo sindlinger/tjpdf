@@ -1466,6 +1466,8 @@ namespace FilterPDF.Commands
             string originExtra = ExtractExtraOrigin(header, bookmarks, fullText, originMain, originSub);
             var sei = ExtractSeiMetadata(fullText, lastTwoText, footer, docLabel);
             string signer = sei.Signer ?? ExtractSigner(lastTwoText, footer, footerSignatureRaw, signatures);
+            if (string.IsNullOrWhiteSpace(signer))
+                signer = ExtractSignerFromDocumentText(fullText);
             string signedAt = sei.SignedAt ?? ExtractSignedAt(lastTwoText, footer, footerSignatureRaw);
             string dateFooter = ExtractDateFromFooter(lastTwoText, footer, header, footerSignatureRaw);
             string headerHash = HashText(header);
@@ -2549,13 +2551,25 @@ namespace FilterPDF.Commands
         private string ExtractSignerFromSignatureLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line)) return "";
-            var matches = Regex.Matches(line, @"[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+(?:de|da|do|dos|das|e|d')\s+)?[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+){0,4}", RegexOptions.IgnoreCase);
+            var matches = Regex.Matches(line, @"[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+(?:de|da|do|dos|das|e|d')\s+)?[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+){0,4}");
             if (matches.Count == 0) return "";
             var candidate = matches[matches.Count - 1].Value.Trim();
             if (candidate.Length < 6) return "";
+            if (!Regex.IsMatch(candidate, @"[A-ZÁÉÍÓÚÂÊÔÃÕÇ]")) return "";
+            if (IsGenericSignerLabel(candidate)) return "";
             if (IsGeneric(candidate)) return "";
             if (candidate.Any(char.IsDigit)) return "";
             return candidate;
+        }
+
+        private bool IsGenericSignerLabel(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            var t = TextUtils.NormalizeWhitespace(text).ToLowerInvariant();
+            if (t == "assinatura" || t == "assinado" || t == "documento") return true;
+            if (t.StartsWith("assinatura ") || t.StartsWith("assinado ") || t.StartsWith("documento "))
+                return true;
+            return false;
         }
 
         private string ExtractSigner(string lastPageText, string footer, string footerSignatureRaw, List<DigitalSignature> signatures)
@@ -2649,6 +2663,41 @@ namespace FilterPDF.Commands
                 var lower = line.ToLowerInvariant();
                 if (cargoKeywords.Any(k => lower.Contains(k)) || namePattern.IsMatch(line))
                     return line;
+            }
+            return "";
+        }
+
+        private string ExtractSignerFromDocumentText(string fullText)
+        {
+            if (string.IsNullOrWhiteSpace(fullText)) return "";
+            var sources = new List<string> { fullText };
+            var collapsedSingles = CollapseSingleLetterSpacings(fullText);
+            var collapsed = TextUtils.CollapseSpacedLettersText(collapsedSingles);
+            if (!string.Equals(collapsed, fullText, StringComparison.Ordinal))
+                sources.Add(collapsed);
+
+            foreach (var source in sources)
+            {
+                var docPageSigned = Regex.Match(source, @"documento\s+\d+[^\n]{0,120}?assinado[^\n]{0,60}?por\s*[:\-]?\s*([\p{L} .'’\-]+?)(?=\s*(?:,|\(|\bcpf\b|\bem\b|\n|$|-\s*\d))", RegexOptions.IgnoreCase);
+                if (docPageSigned.Success)
+                {
+                    var name = docPageSigned.Groups[1].Value.Trim();
+                    if (!IsGenericSignerLabel(name)) return name;
+                }
+
+                var docSigned = Regex.Match(source, @"documento\s+assinado\s+eletronicamente\s+por\s*[:\-]?\s*([\p{L} .'’\-]+?)(?=\s*(?:,|\(|\bcpf\b|\bem\b|\n|$|-\s*\d))", RegexOptions.IgnoreCase);
+                if (docSigned.Success)
+                {
+                    var name = docSigned.Groups[1].Value.Trim();
+                    if (!IsGenericSignerLabel(name)) return name;
+                }
+
+                var match = Regex.Match(source, @"assinado(?:\s+digitalmente|\s+eletronicamente)?\s+por\s*[:\-]?\s*([\p{L} .'’\-]+?)(?=\s*(?:,|\(|\bcpf\b|\bem\b|\n|$|-\s*\d))", RegexOptions.IgnoreCase);
+                if (match.Success)
+                {
+                    var name = match.Groups[1].Value.Trim();
+                    if (!IsGenericSignerLabel(name)) return name;
+                }
             }
             return "";
         }

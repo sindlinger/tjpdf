@@ -46,4 +46,5 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 - Comandos de etapa adicionados: `tjpb-s1` e `tjpb-s3` (validação progressiva por etapa).
 - PDFAnalyzer + fetch-bookmark-titles: agora compartilham `BookmarkExtractor` (Outlines + fallback `/Outlines` + NameTree).
 - PDFAnalyzer: tabulação do `PageText` agora colapsa letras espaçadas (ex.: “P O D E R” → “PODER”) preservando separação entre palavras.
+- Assinatura: evita falso positivo (“Assinatura” sem nome) e faz fallback de `signer` buscando em todo o texto do documento.
 - PDFAnalyzer: texto tabulado mantém fallback para texto extraído (não zera quando a tabulação falha).

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using FilterPDF;
+using FilterPDF.TjpbDespachoExtractor.Utils;
 using iText.Signatures;
 using Newtonsoft.Json;
 
@@ -174,13 +175,25 @@ namespace FilterPDF.Commands
         private string ExtractSignerFromSignatureLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line)) return "";
-            var matches = Regex.Matches(line, @"[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+(?:de|da|do|dos|das|e|d')\s+)?[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+){0,4}", RegexOptions.IgnoreCase);
+            var matches = Regex.Matches(line, @"[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+(?:de|da|do|dos|das|e|d')\s+)?[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+){0,4}");
             if (matches.Count == 0) return "";
             var candidate = matches[matches.Count - 1].Value.Trim();
             if (candidate.Length < 6) return "";
+            if (!Regex.IsMatch(candidate, @"[A-ZÁÉÍÓÚÂÊÔÃÕÇ]")) return "";
+            if (IsGenericSignerLabel(candidate)) return "";
             if (IsGeneric(candidate)) return "";
             if (candidate.Any(char.IsDigit)) return "";
             return candidate;
+        }
+
+        private bool IsGenericSignerLabel(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            var t = TextUtils.NormalizeWhitespace(text).ToLowerInvariant();
+            if (t == "assinatura" || t == "assinado" || t == "documento") return true;
+            if (t.StartsWith("assinatura ") || t.StartsWith("assinado ") || t.StartsWith("documento "))
+                return true;
+            return false;
         }
 
         private string ExtractSigner(string lastPageText, string footer, string footerSignatureRaw, List<DigitalSignature> signatures)
