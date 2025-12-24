@@ -83,6 +83,12 @@ namespace TjpdfPipeline.Cli
                 cmd.Execute(cmdArgs);
                 return 0;
             }
+            if (cmdName.Equals("tjpb-s7", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new TjpbStage7Command();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
             if (cmdName.Equals("fetch-bookmark-titles", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = new FetchBookmarkTitlesCommand();
@@ -115,6 +121,7 @@ namespace TjpdfPipeline.Cli
             Console.WriteLine("tjpdf-cli preprocess-inputs --input-dir <dir> [--out-dir <dir>] [--max N] [--per-process-dir] [--flat]");
             Console.WriteLine("tjpdf-cli tjpb-s1 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-json]");
             Console.WriteLine("tjpdf-cli tjpb-s3 [--input-dir <dir>] [--input-manifest <file>] [--out-dir <dir>] [--max N] [--print-summary]");
+            Console.WriteLine("tjpdf-cli tjpb-s7 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-summary]");
             Console.WriteLine("tjpdf-cli fetch-bookmark-titles --input-file <pdf> [--json] [--tree]");
             Console.WriteLine("tjpdf-cli bookmark-paragraphs --input-file <pdf> [--bookmark <texto>] [--all] [--first] [--last] [--json]");
             Console.WriteLine("tjpdf-cli pdf-unicode list --input file.pdf");

@@ -74,6 +74,9 @@ namespace FilterPDF.Commands
             bool debugSigner = false;
             bool fieldsOnly = false;
             bool printJson = false;
+            string? stage = null;
+            string stageOutDir = Path.Combine(Directory.GetCurrentDirectory(), "stage7_out");
+            bool stagePrintSummary = false;
             int limit = 0;
             string? exportCsvPath = null;
             string pgUri = FilterPDF.Utils.PgDocStore.DefaultPgUri;
@@ -126,6 +129,9 @@ namespace FilterPDF.Commands
                 if (args[i] == "--debug-signer") debugSigner = true;
                 if (args[i] == "--fields-only") fieldsOnly = true;
                 if (args[i] == "--print-json") printJson = true;
+                if (args[i] == "--stage" && i + 1 < args.Length) stage = args[i + 1];
+                if (args[i] == "--out-dir" && i + 1 < args.Length) stageOutDir = args[i + 1];
+                if (args[i] == "--print-summary") stagePrintSummary = true;
                 if (args[i] == "--limit" && i + 1 < args.Length)
                 {
                     if (int.TryParse(args[i + 1], out var lim) && lim > 0)
@@ -332,6 +338,12 @@ namespace FilterPDF.Commands
                 }
             }
 
+                if (string.Equals(stage, "s7", StringComparison.OrdinalIgnoreCase))
+                {
+                    WriteStage7Output(allDocs, stageOutDir, stagePrintSummary);
+                    return;
+                }
+
                 if (debugDocSummary)
                     return;
 
@@ -466,6 +478,8 @@ namespace FilterPDF.Commands
             Console.WriteLine("--fields-only: imprime apenas os fields principais (JSON) e não grava no Postgres.");
             Console.WriteLine("--print-json: imprime o JSON completo (por processo) e não grava no Postgres.");
             Console.WriteLine("--export-csv [caminho]: gera CSV consolidado por processo (default: ./tjpb_export.csv).");
+            Console.WriteLine("--stage s7 --out-dir <dir>: gera JSON por processo até o S7 (BuildDocObject) e não segue para CSV/PG.");
+            Console.WriteLine("--print-summary: imprime o manifest do stage (quando --stage s7 estiver ativo).");
             Console.WriteLine("--limit <n>: processa no máximo <n> PDFs/JSONs da pasta de entrada.");
         }
 
@@ -1242,7 +1256,6 @@ namespace FilterPDF.Commands
 
             var headers = new[]
             {
-                "process",
                 "processo_administrativo",
                 "processo_judicial",
                 "comarca",
@@ -1258,10 +1271,7 @@ namespace FilterPDF.Commands
                 "valor_arbitrado_cm",
                 "valor_arbitrado_final",
                 "data_arbitrado_final",
-                "data_requisicao",
-                "despacho_label",
-                "certidao_label",
-                "requerimento_label"
+                "data_requisicao"
             };
 
             var sb = new StringBuilder();
@@ -1277,6 +1287,49 @@ namespace FilterPDF.Commands
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
             Console.WriteLine($"[pipeline-tjpb] CSV exportado: {path} ({groups.Count} processos).");
+        }
+
+        private void WriteStage7Output(List<Dictionary<string, object>> docs, string outDir, bool printSummary)
+        {
+            docs ??= new List<Dictionary<string, object>>();
+            Directory.CreateDirectory(outDir);
+
+            var outputs = new List<Dictionary<string, object>>();
+            var grouped = docs.GroupBy(d => d.TryGetValue("process", out var p) ? p?.ToString() ?? "sem_processo" : "sem_processo")
+                              .ToList();
+
+            foreach (var grp in grouped)
+            {
+                var procName = grp.Key ?? "sem_processo";
+                var outPath = Path.Combine(outDir, $"{procName}.json");
+                var payload = new
+                {
+                    stage = "S7",
+                    process = procName,
+                    documents = grp.ToList()
+                };
+                File.WriteAllText(outPath, JsonConvert.SerializeObject(payload, Formatting.Indented));
+                outputs.Add(new Dictionary<string, object>
+                {
+                    ["process"] = procName,
+                    ["output"] = outPath,
+                    ["documents"] = grp.Count()
+                });
+            }
+
+            var manifest = new Dictionary<string, object>
+            {
+                ["stage"] = "S7",
+                ["output_dir"] = Path.GetFullPath(outDir),
+                ["outputs"] = outputs
+            };
+            var manifestPath = Path.Combine(outDir, "stage7_outputs.json");
+            File.WriteAllText(manifestPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
+
+            Console.WriteLine($"[pipeline-tjpb] S7 output: {Path.GetFullPath(outDir)}");
+            Console.WriteLine($"[pipeline-tjpb] S7 manifest: {manifestPath}");
+            if (printSummary)
+                Console.WriteLine(JsonConvert.SerializeObject(manifest, Formatting.Indented));
         }
 
         private Dictionary<string, string> BuildProcessRow(string process, List<Dictionary<string, object>> docs)

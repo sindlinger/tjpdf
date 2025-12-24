@@ -200,6 +200,7 @@ Use estes comandos para validar cada etapa isoladamente:
 
 - `tjpb-s1` → executa **S1** e gera `stage1_manifest.json`
 - `tjpb-s3` → executa **S2** (RAW/PDFAnalyzer) e gera `stage3_outputs.json`
+- `tjpb-s7` → executa **S3–S7** (segmentação + BuildDocObject) e gera `stage7_outputs.json`
 
 ---
 

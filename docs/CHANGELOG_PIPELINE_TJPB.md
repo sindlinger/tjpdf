@@ -73,3 +73,4 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
   - extraído no requerimento de pagamento de honorários,
   - gravado no DTO do requerimento,
   - exportado no CSV consolidado.
+- Novo comando de etapa: `tjpb-s7` (segmentação + BuildDocObject) com saída `stage7_outputs.json`.
