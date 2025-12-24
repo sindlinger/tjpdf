@@ -59,7 +59,7 @@ reference:
           - "avaliacao comercial"
 
 thresholds:
-  densityMin: 0.15
+  blank_max_pct: 20
   minPages: 2
   maxPages: 6
   bands:

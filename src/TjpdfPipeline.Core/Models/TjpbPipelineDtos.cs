@@ -53,11 +53,8 @@ namespace FilterPDF.Models
         [JsonProperty("char_count")]
         public long CharCount { get; set; }
 
-        [JsonProperty("text_density")]
-        public double TextDensity { get; set; }
-
-        [JsonProperty("blank_ratio")]
-        public double BlankRatio { get; set; }
+        [JsonProperty("percentual_blank")]
+        public double PercentualBlank { get; set; }
 
         [JsonProperty("header")]
         public string Header { get; set; } = "";

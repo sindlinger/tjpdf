@@ -23,7 +23,7 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 - `PIPELINE_TJPB_FLOW.md` detalhado com arquivos/funções por etapa.
 - Removidos do JSON: `despacho_tipo`, `despacho_categoria`, `despacho_destino`.
 - Mantidas apenas as flags finais: `is_despacho_autorizacao` e `is_despacho_encaminhamento` (GEORC = autorização; Conselho = encaminhamento).
-- `is_despacho_valid` agora exige `text_density >= densityMin` além de `minPages` e hints (config.yaml).
+- `is_despacho_valid` agora exige `percentual_blank <= blank_max_pct` além de `minPages` e hints (config.yaml).
 - Removidos hints genéricos de autorização: `AUTORIZADO` e `AUTORIZA` (config.yaml).
 - Header fallback: quando não há header nativo, o pipeline usa linhas do topo (LineInfo), depois words/band, e por fim as 3 primeiras linhas do PageText.
 

@@ -632,15 +632,6 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                 }
             }
 
-            var topDensity = density
-                .Where(kv => kv.Value >= _cfg.Thresholds.DensityMin)
-                .OrderByDescending(kv => kv.Value)
-                .Take(6)
-                .Select(kv => kv.Key)
-                .ToList();
-            foreach (var p in topDensity)
-                AddWindows(candidates, p, totalPages);
-
             return candidates.Select(c => (c.Item1, c.Item2)).ToList();
         }
 
@@ -792,9 +783,6 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
             {
                 end++;
                 footerFound = PageHasFooter(analysis, end) || footerFound;
-                var d = density.TryGetValue(end, out var v) ? v : 0;
-                if (footerFound && d < _cfg.Thresholds.DensityMin * 0.5)
-                    break;
             }
 
             if (end - start + 1 > _cfg.Thresholds.MaxPages)

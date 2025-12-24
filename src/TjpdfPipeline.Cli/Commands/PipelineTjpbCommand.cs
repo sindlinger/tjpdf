@@ -783,8 +783,8 @@ namespace FilterPDF.Commands
             bool hasSignature = false;
             int wordCount = 0;
             int charCount = 0;
-            double wordsArea = 0;
-            double pageAreaAcc = 0;
+            int filledCharCount = 0;
+            double totalLineCapacity = 0;
             var wordsWithCoords = new List<Dictionary<string, object>>();
             var docBookmarks = ExtractBookmarksForRange(analysis, d.StartPage, d.EndPage);
             var unpackedAttachments = new List<Dictionary<string, object>>();
@@ -801,15 +801,10 @@ namespace FilterPDF.Commands
                 wordCount += page.TextInfo.WordCount;
                 charCount += page.TextInfo.CharacterCount;
 
-                var size = page.Size;
-                var pageArea = Math.Max(1, size.Width * size.Height);
-                pageAreaAcc += pageArea;
-
+                var pageWordDicts = new List<Dictionary<string, object>>();
                 foreach (var w in page.TextInfo.Words)
                 {
-                    double wArea = Math.Max(0, (w.X1 - w.X0) * (w.Y1 - w.Y0));
-                    wordsArea += wArea;
-                    wordsWithCoords.Add(new Dictionary<string, object>
+                    var dict = new Dictionary<string, object>
                     {
                         ["text"] = w.Text,
                         ["page"] = p,
@@ -831,7 +826,66 @@ namespace FilterPDF.Commands
                         ["ny0"] = w.NormY0,
                         ["nx1"] = w.NormX1,
                         ["ny1"] = w.NormY1
-                    });
+                    };
+                    pageWordDicts.Add(dict);
+                    wordsWithCoords.Add(dict);
+                }
+
+                var lineObjs = BuildLines(pageWordDicts);
+                var textLines = lineObjs
+                    .Select(l => new { Line = l, SolidCount = CountSolidChars(l.Text) })
+                    .Where(x => x.SolidCount > 0)
+                    .ToList();
+
+                filledCharCount += textLines.Sum(x => x.SolidCount);
+
+                if (textLines.Count > 0)
+                {
+                    var lineHeights = textLines
+                        .Select(x => Math.Max(0, x.Line.NY1 - x.Line.NY0))
+                        .Where(h => h > 0)
+                        .OrderBy(h => h)
+                        .ToList();
+                    double lineHeight = lineHeights.Count > 0 ? lineHeights[lineHeights.Count / 2] : 0;
+
+                    var ordered = textLines
+                        .OrderByDescending(x => x.Line.NY1)
+                        .ToList();
+
+                    int blankLines = 0;
+                    if (lineHeight > 0 && ordered.Count > 1)
+                    {
+                        for (int i = 0; i < ordered.Count - 1; i++)
+                        {
+                            var current = ordered[i].Line;
+                            var next = ordered[i + 1].Line;
+                            var gap = current.NY0 - next.NY1;
+                            if (gap > lineHeight)
+                            {
+                                var extra = (int)Math.Round(gap / lineHeight) - 1;
+                                if (extra > 0) blankLines += extra;
+                            }
+                        }
+                    }
+
+                    var lineWidths = textLines
+                        .Select(x => Math.Max(0, x.Line.NX1 - x.Line.NX0))
+                        .ToList();
+                    var charWidths = textLines
+                        .Select(x =>
+                        {
+                            var w = Math.Max(0, x.Line.NX1 - x.Line.NX0);
+                            return x.SolidCount > 0 ? (w / x.SolidCount) : 0;
+                        })
+                        .Where(v => v > 0)
+                        .ToList();
+
+                    double avgCharWidth = charWidths.Count > 0 ? charWidths.Average() : 0;
+                    double maxLineWidth = lineWidths.Count > 0 ? lineWidths.Max() : 0;
+                    double maxCharsPerLine = (avgCharWidth > 0 && maxLineWidth > 0) ? (maxLineWidth / avgCharWidth) : 0;
+
+                    double lineSlots = textLines.Count + blankLines;
+                    totalLineCapacity += maxCharsPerLine * lineSlots;
                 }
 
                 if (string.IsNullOrEmpty(header) && page.TextInfo.Headers.Any()) header = page.TextInfo.Headers.First();
@@ -882,8 +936,11 @@ namespace FilterPDF.Commands
             var anexos = docBookmarks
                 .Where(b => Regex.IsMatch(b["title"].ToString() ?? "", "^anexos?$", RegexOptions.IgnoreCase))
                 .ToList();
-            double textDensity = pageAreaAcc > 0 ? wordsArea / pageAreaAcc : 0;
-            double blankRatio = 1 - textDensity;
+            double percentualBlank = totalLineCapacity > 0
+                ? (filledCharCount / totalLineCapacity) * 100.0
+                : 0;
+            if (percentualBlank < 0) percentualBlank = 0;
+            if (percentualBlank > 100) percentualBlank = 100;
 
             var originalLabel = !string.IsNullOrWhiteSpace(d.RawTitle)
                 ? d.RawTitle
@@ -962,8 +1019,8 @@ namespace FilterPDF.Commands
             }
             var cfg = _tjpbCfg ?? new TjpbDespachoConfig();
             var minPages = cfg.Thresholds.MinPages > 0 ? cfg.Thresholds.MinPages : 2;
-            var densityMin = cfg.Thresholds.DensityMin > 0 ? cfg.Thresholds.DensityMin : 0;
-            var densityOk = textDensity >= densityMin;
+            var blankMaxPct = cfg.Thresholds.BlankMaxPct > 0 ? cfg.Thresholds.BlankMaxPct : 15;
+            var densityOk = percentualBlank <= blankMaxPct;
             var isDespachoValid = isDespachoCandidate && d.PageCount >= minPages && densityOk && MatchesOrigin(docMeta, "despacho") && MatchesSigner(docMeta);
             var isCertidaoValid = isCertidaoCandidate && MatchesOrigin(docMeta, "certidao") && MatchesSigner(docMeta);
             var isDespachoShort = isDespachoCandidate && d.PageCount < 2;
@@ -1057,8 +1114,7 @@ namespace FilterPDF.Commands
                 ["is_attachment"] = false,
                 ["word_count"] = wordCount,
                 ["char_count"] = charCount,
-                ["text_density"] = textDensity,
-                ["blank_ratio"] = blankRatio,
+                ["percentual_blank"] = percentualBlank,
                 ["words"] = wordsWithCoords,
                 ["header"] = header,
                 ["footer"] = footer,
@@ -1494,15 +1550,22 @@ namespace FilterPDF.Commands
             var orderedParas = paras.OrderBy(p => p.Page).ThenByDescending(p => p.Ny0).ToArray();
             var firstPara = orderedParas.FirstOrDefault()?.Text ?? "";
             var lastPara = orderedParas.LastOrDefault()?.Text ?? "";
-            var docHead = string.IsNullOrWhiteSpace(firstPara)
-                ? ""
-                : (string.IsNullOrWhiteSpace(header) ? firstPara : $"{header}\n{firstPara}");
-            var docTail = string.IsNullOrWhiteSpace(lastPara)
-                ? ""
-                : (string.IsNullOrWhiteSpace(footer) ? lastPara : $"{lastPara}\n{footer}");
-            if (!string.IsNullOrWhiteSpace(footerSignatureRaw))
+            bool isDespachoLabel = Regex.IsMatch(docLabel ?? "", "despacho", RegexOptions.IgnoreCase);
+            string docHead = "";
+            string docTail = "";
+            if (isDespachoLabel)
             {
-                docTail = string.IsNullOrWhiteSpace(docTail) ? footerSignatureRaw : $"{docTail}\n{footerSignatureRaw}";
+                var headParts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(header)) headParts.Add(header);
+                if (!string.IsNullOrWhiteSpace(subHeader)) headParts.Add(subHeader);
+                if (!string.IsNullOrWhiteSpace(firstPara)) headParts.Add(firstPara);
+                docHead = string.Join("\n", headParts.Where(p => !string.IsNullOrWhiteSpace(p)));
+
+                var tailParts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(lastPara)) tailParts.Add(lastPara);
+                if (!string.IsNullOrWhiteSpace(footer)) tailParts.Add(footer);
+                if (!string.IsNullOrWhiteSpace(footerSignatureRaw)) tailParts.Add(footerSignatureRaw);
+                docTail = string.Join("\n", tailParts.Where(p => !string.IsNullOrWhiteSpace(p)));
             }
             var party = ExtractPartyInfo(fullText);
             var partyBBoxes = ExtractPartyBBoxes(paras, d.StartPage, d.EndPage);
@@ -4941,6 +5004,19 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             t = Regex.Replace(t, @"\\s+", " ").Trim();
             return t;
         }
+
+        private int CountSolidChars(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            int count = 0;
+            foreach (var ch in text)
+            {
+                if (char.IsLetterOrDigit(ch))
+                    count++;
+            }
+            return count;
+        }
+
 
         private bool MatchesOrigin(Dictionary<string, object> docMeta, string docType)
         {

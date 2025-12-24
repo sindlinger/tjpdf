@@ -75,7 +75,7 @@ Regra do valor arbitrado final:
   - `font_dominant`, `size_dominant`
 - Cada documento tem métricas como:
   - `doc_pages`, `total_pages`
-  - `text_density`, `blank_ratio`
+  - `percentual_blank`
   - `fonts` e `words` (com fonte/tamanho por palavra)
 
 ### 5) Referências úteis (catálogos)

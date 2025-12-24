@@ -425,7 +425,7 @@ namespace FilterPDF.Utils
                 long charCount = GetLong(doc, "char_count");
                 int images = GetInt(doc, "images");
                 int fonts = (doc.TryGetValue("fonts", out var f) && f is IEnumerable<object> farr) ? farr.Count() : 0;
-                decimal scanRatio = (decimal)Math.Max(0, Math.Min(100, GetDouble(doc, "blank_ratio") * 100));
+                decimal scanRatio = 0;
 
                 var meta = SanitizeJson(doc) ?? new Dictionary<string, object>();
 

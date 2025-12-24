@@ -1,6 +1,6 @@
 # Fluxo Detalhado do Pipeline TJPB (TJPDF)
 
-Atualizado em: **2025-12-23 12:46:06 -03**
+Atualizado em: **2025-12-24 02:06:07 -03**
 
 Este documento descreve **o caminho completo** dos arquivos e a execução do pipeline **desde a ingestão**, até a geração do JSON e a persistência no Postgres. O objetivo é servir como referência única para o time (e para agentes) sobre **como o pipeline realmente opera** hoje.
 
@@ -219,14 +219,15 @@ Após a segmentação por bookmark, o pipeline **sanitiza o título** e usa os c
 **DT-OR (campos do JSON usados na seleção)**:
 - `origin_main`, `origin_sub`, `origin_extra`
 - `signer`, `signed_at`, `date_footer`
-- `doc_head`, `doc_tail`
+- `doc_head`, `doc_tail` *(somente despacho; doc_head inclui header+subheader + 1º parágrafo; doc_tail inclui último parágrafo + footer)*
 - `process_line`, `interested_*`, `juizo_*`
+- `percentual_blank` *(heurística de branco; quanto menor, mais preenchido)*
 
 **Regras atuais de seleção (no código)**:
-- **Despacho válido**: `is_despacho && doc_pages >= minPages && text_density >= densityMin && MatchesOrigin && MatchesSigner`.
+- **Despacho válido**: `is_despacho && doc_pages >= minPages && percentual_blank <= blank_max_pct && MatchesOrigin && MatchesSigner`.
   - `MatchesOrigin` usa *hints* de `configs/config.yaml` (anchors/header).
   - `MatchesSigner` usa `SignerHints` (ex.: Robson).
-  - `minPages` e `densityMin` vêm de `configs/config.yaml` (thresholds).
+  - `minPages` e `blank_max_pct` vêm de `configs/config.yaml` (thresholds).
 - **Certidão CM válida**: `is_certidao && MatchesOrigin && MatchesSigner`.
 - **Despacho tipo**: apenas 2 flags finais:
   - `is_despacho_autorizacao` (inclui GEORC)
@@ -304,7 +305,7 @@ Para cada boundary:
 - `lastPageText` e `lastTwoText` para footer/assinatura.
 - Métricas:
   - `word_count`, `char_count`
-  - `text_density`, `blank_ratio`
+  - `percentual_blank`
   - `fonts`, `images`, `page_size`
 
 ### 7.2 Cabeçalho/Rodapé
