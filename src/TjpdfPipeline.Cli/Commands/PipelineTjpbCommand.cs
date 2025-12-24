@@ -69,6 +69,7 @@ namespace FilterPDF.Commands
             bool debugSigner = false;
             bool fieldsOnly = false;
             bool printJson = false;
+            int limit = 0;
             string? exportCsvPath = null;
             string pgUri = FilterPDF.Utils.PgDocStore.DefaultPgUri;
             string configPath = Path.Combine("configs", "config.yaml");
@@ -112,6 +113,11 @@ namespace FilterPDF.Commands
                 if (args[i] == "--debug-signer") debugSigner = true;
                 if (args[i] == "--fields-only") fieldsOnly = true;
                 if (args[i] == "--print-json") printJson = true;
+                if (args[i] == "--limit" && i + 1 < args.Length)
+                {
+                    if (int.TryParse(args[i + 1], out var lim) && lim > 0)
+                        limit = lim;
+                }
                 if (args[i] == "--export-csv")
                 {
                     if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.OrdinalIgnoreCase))
@@ -187,7 +193,9 @@ namespace FilterPDF.Commands
                 var allDocs = new List<Dictionary<string, object>>();
                 var allDocsWords = new List<List<Dictionary<string, object>>>();
 
-                var sources = useCache ? jsonCaches.Cast<FileInfo>() : pdfs.Cast<FileInfo>();
+                var sources = (useCache ? jsonCaches.Cast<FileInfo>() : pdfs.Cast<FileInfo>()).ToList();
+                if (limit > 0)
+                    sources = sources.Take(limit).ToList();
 
                 foreach (var file in sources)
                 {
@@ -431,7 +439,7 @@ namespace FilterPDF.Commands
 
         public override void ShowHelp()
         {
-            Console.WriteLine("fpdf pipeline-tjpb --input-dir <dir> [--split-anexos] [--only-despachos] [--signer-contains <texto>]");
+            Console.WriteLine("fpdf pipeline-tjpb --input-dir <dir> [--limit <n>] [--split-anexos] [--only-despachos] [--signer-contains <texto>]");
             Console.WriteLine("--config: caminho para config.yaml (opcional; usado para hints de despacho).");
             Console.WriteLine("Lê caches (tmp/cache/*.json) ou PDFs; grava no Postgres (processes + documents). Não gera arquivo.");
             Console.WriteLine("Se houver .zip no input-dir, mergeia PDFs internos e cria bookmarks por nome de arquivo.");
@@ -443,6 +451,7 @@ namespace FilterPDF.Commands
             Console.WriteLine("--fields-only: imprime apenas os fields principais (JSON) e não grava no Postgres.");
             Console.WriteLine("--print-json: imprime o JSON completo (por processo) e não grava no Postgres.");
             Console.WriteLine("--export-csv [caminho]: gera CSV consolidado por processo (default: ./tjpb_export.csv).");
+            Console.WriteLine("--limit <n>: processa no máximo <n> PDFs/JSONs da pasta de entrada.");
         }
 
         private void EnsureReferenceCaches()
@@ -1553,6 +1562,10 @@ namespace FilterPDF.Commands
             bool isDespachoLabel = Regex.IsMatch(docLabel ?? "", "despacho", RegexOptions.IgnoreCase);
             string docHead = "";
             string docTail = "";
+            string docHeadBBoxText = "";
+            string docTailBBoxText = "";
+            Dictionary<string, object> docHeadBBox = null;
+            Dictionary<string, object> docTailBBox = null;
             if (isDespachoLabel)
             {
                 var headParts = new List<string>();
@@ -1566,6 +1579,14 @@ namespace FilterPDF.Commands
                 if (!string.IsNullOrWhiteSpace(footer)) tailParts.Add(footer);
                 if (!string.IsNullOrWhiteSpace(footerSignatureRaw)) tailParts.Add(footerSignatureRaw);
                 docTail = string.Join("\n", tailParts.Where(p => !string.IsNullOrWhiteSpace(p)));
+
+                var headResult = ExtractHeadBBox(words, firstPara);
+                docHeadBBoxText = headResult.Text;
+                docHeadBBox = headResult.BBox;
+
+                var tailResult = ExtractTailBBox(words, lastPara);
+                docTailBBoxText = tailResult.Text;
+                docTailBBox = tailResult.BBox;
             }
             var party = ExtractPartyInfo(fullText);
             var partyBBoxes = ExtractPartyBBoxes(paras, d.StartPage, d.EndPage);
@@ -1605,6 +1626,15 @@ namespace FilterPDF.Commands
                 ["juizo_bbox"] = partyBBoxes.JuizoBBox
             };
 
+            if (!string.IsNullOrWhiteSpace(docHeadBBoxText))
+                meta["doc_head_bbox_text"] = docHeadBBoxText;
+            if (docHeadBBox != null)
+                meta["doc_head_bbox"] = docHeadBBox;
+            if (!string.IsNullOrWhiteSpace(docTailBBoxText))
+                meta["doc_tail_bbox_text"] = docTailBBoxText;
+            if (docTailBBox != null)
+                meta["doc_tail_bbox"] = docTailBBox;
+
             if (debugSigner)
             {
                 meta["signer_candidates"] = new Dictionary<string, object>
@@ -1619,6 +1649,67 @@ namespace FilterPDF.Commands
             }
 
             return meta;
+        }
+
+        private (string Text, Dictionary<string, object> BBox) ExtractHeadBBox(List<Dictionary<string, object>> words, ParagraphObj firstPara)
+        {
+            if (words == null || words.Count == 0 || firstPara == null) return ("", null);
+            int page = firstPara.Page;
+            double cutoff = firstPara.Ny0;
+            var selected = words
+                .Where(w => Convert.ToInt32(w["page"]) == page && Convert.ToDouble(w["ny0"]) >= cutoff)
+                .ToList();
+            return BuildTextAndBBox(selected, "doc_head_bbox");
+        }
+
+        private (string Text, Dictionary<string, object> BBox) ExtractTailBBox(List<Dictionary<string, object>> words, ParagraphObj lastPara)
+        {
+            if (words == null || words.Count == 0 || lastPara == null) return ("", null);
+            int page = lastPara.Page;
+            double cutoff = lastPara.Ny1;
+            var selected = words
+                .Where(w =>
+                {
+                    int p = Convert.ToInt32(w["page"]);
+                    if (p > page) return true;
+                    if (p < page) return false;
+                    return Convert.ToDouble(w["ny1"]) <= cutoff;
+                })
+                .ToList();
+            return BuildTextAndBBox(selected, "doc_tail_bbox");
+        }
+
+        private (string Text, Dictionary<string, object> BBox) BuildTextAndBBox(List<Dictionary<string, object>> words, string tag)
+        {
+            if (words == null || words.Count == 0) return ("", null);
+
+            var lines = BuildLines(words)
+                .OrderBy(l => l.Page)
+                .ThenByDescending(l => l.NY0)
+                .Select(l => l.Text.Trim())
+                .Where(t => t.Length > 0)
+                .ToList();
+
+            var text = string.Join("\n", lines);
+
+            double nx0 = words.Min(w => Convert.ToDouble(w["nx0"]));
+            double ny0 = words.Min(w => Convert.ToDouble(w["ny0"]));
+            double nx1 = words.Max(w => Convert.ToDouble(w["nx1"]));
+            double ny1 = words.Max(w => Convert.ToDouble(w["ny1"]));
+            var pages = words.Select(w => Convert.ToInt32(w["page"])).Distinct().OrderBy(p => p).ToList();
+
+            var bbox = new Dictionary<string, object>
+            {
+                ["nx0"] = nx0,
+                ["ny0"] = ny0,
+                ["nx1"] = nx1,
+                ["ny1"] = ny1,
+                ["page_start"] = pages.First(),
+                ["page_end"] = pages.Last(),
+                ["tag"] = tag
+            };
+
+            return (text, bbox);
         }
 
         private string ExtractProcessCnj(string fullText, string processNumber, string processLine)

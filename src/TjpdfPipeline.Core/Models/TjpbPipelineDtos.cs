@@ -140,6 +140,24 @@ namespace FilterPDF.Models
         [JsonProperty("date_footer")]
         public string DateFooter { get; set; } = "";
 
+        [JsonProperty("doc_head")]
+        public string DocHead { get; set; } = "";
+
+        [JsonProperty("doc_tail")]
+        public string DocTail { get; set; } = "";
+
+        [JsonProperty("doc_head_bbox_text")]
+        public string DocHeadBboxText { get; set; } = "";
+
+        [JsonProperty("doc_head_bbox")]
+        public Dictionary<string, object> DocHeadBbox { get; set; } = new();
+
+        [JsonProperty("doc_tail_bbox_text")]
+        public string DocTailBboxText { get; set; } = "";
+
+        [JsonProperty("doc_tail_bbox")]
+        public Dictionary<string, object> DocTailBbox { get; set; } = new();
+
         [JsonProperty("process_line")]
         public string ProcessLine { get; set; } = "";
 
