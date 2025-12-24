@@ -1557,15 +1557,17 @@ namespace FilterPDF.Commands
             string title = ExtractTitle(header, bookmarks, fullText, originMain, originSub);
             var paras = BuildParagraphsFromWords(words);
             var orderedParas = paras.OrderBy(p => p.Page).ThenByDescending(p => p.Ny0).ToArray();
-            var firstPara = orderedParas.FirstOrDefault()?.Text ?? "";
-            var lastPara = orderedParas.LastOrDefault()?.Text ?? "";
+            var firstParaObj = orderedParas.FirstOrDefault();
+            var lastParaObj = orderedParas.LastOrDefault();
+            var firstPara = firstParaObj?.Text ?? "";
+            var lastPara = lastParaObj?.Text ?? "";
             bool isDespachoLabel = Regex.IsMatch(docLabel ?? "", "despacho", RegexOptions.IgnoreCase);
             string docHead = "";
             string docTail = "";
             string docHeadBBoxText = "";
             string docTailBBoxText = "";
-            Dictionary<string, object> docHeadBBox = null;
-            Dictionary<string, object> docTailBBox = null;
+            Dictionary<string, object>? docHeadBBox = null;
+            Dictionary<string, object>? docTailBBox = null;
             if (isDespachoLabel)
             {
                 var headParts = new List<string>();
@@ -1580,11 +1582,11 @@ namespace FilterPDF.Commands
                 if (!string.IsNullOrWhiteSpace(footerSignatureRaw)) tailParts.Add(footerSignatureRaw);
                 docTail = string.Join("\n", tailParts.Where(p => !string.IsNullOrWhiteSpace(p)));
 
-                var headResult = ExtractHeadBBox(words, firstPara);
+                var headResult = ExtractHeadBBox(words, firstParaObj);
                 docHeadBBoxText = headResult.Text;
                 docHeadBBox = headResult.BBox;
 
-                var tailResult = ExtractTailBBox(words, lastPara);
+                var tailResult = ExtractTailBBox(words, lastParaObj);
                 docTailBBoxText = tailResult.Text;
                 docTailBBox = tailResult.BBox;
             }
@@ -1651,7 +1653,7 @@ namespace FilterPDF.Commands
             return meta;
         }
 
-        private (string Text, Dictionary<string, object> BBox) ExtractHeadBBox(List<Dictionary<string, object>> words, ParagraphObj firstPara)
+        private (string Text, Dictionary<string, object>? BBox) ExtractHeadBBox(List<Dictionary<string, object>> words, ParagraphObj? firstPara)
         {
             if (words == null || words.Count == 0 || firstPara == null) return ("", null);
             int page = firstPara.Page;
@@ -1662,7 +1664,7 @@ namespace FilterPDF.Commands
             return BuildTextAndBBox(selected, "doc_head_bbox");
         }
 
-        private (string Text, Dictionary<string, object> BBox) ExtractTailBBox(List<Dictionary<string, object>> words, ParagraphObj lastPara)
+        private (string Text, Dictionary<string, object>? BBox) ExtractTailBBox(List<Dictionary<string, object>> words, ParagraphObj? lastPara)
         {
             if (words == null || words.Count == 0 || lastPara == null) return ("", null);
             int page = lastPara.Page;
@@ -1679,7 +1681,7 @@ namespace FilterPDF.Commands
             return BuildTextAndBBox(selected, "doc_tail_bbox");
         }
 
-        private (string Text, Dictionary<string, object> BBox) BuildTextAndBBox(List<Dictionary<string, object>> words, string tag)
+        private (string Text, Dictionary<string, object>? BBox) BuildTextAndBBox(List<Dictionary<string, object>> words, string tag)
         {
             if (words == null || words.Count == 0) return ("", null);
 
