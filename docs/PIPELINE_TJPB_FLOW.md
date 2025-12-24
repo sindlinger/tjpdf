@@ -22,17 +22,19 @@ Mapa encapsulado (visão macro): `docs/PIPELINE_TJPB_CORE.md`
 [S2 PDFAnalyzer]
                      |
                      v
-           [S4 Try Bookmarks]
+      [S3 Segmentação (etapa única)]
+               [S4 Try Bookmarks]
                  |
-                 v
-        {S4? Bookmarks encontrados?}
-           |               |
-          sim             nao
-           |               |
-           v               v
- [S5 Boundaries (bookmarks)] [S6 DocumentSegmenter]
-           |               |
-           +-------> [S7 Document Boundaries]
+     {Bookmarks encontrados?}
+          sim           não
+           |             |
+           v             v
+ [S5 Boundaries via  [S6 DocumentSegmenter
+  Bookmarks]          (heurística)]
+           \\           /
+            \\         /
+             v       v
+     [S7 Document Boundaries]
                      |
                      v
      [S8 BuildDocObject (DTO por documento)]
@@ -48,6 +50,8 @@ Mapa encapsulado (visão macro): `docs/PIPELINE_TJPB_CORE.md`
                      v
                [S11 Postgres Persist]
 ```
+
+**Nota:** a etapa **S3** engloba os procedimentos internos **S4–S7** (bookmarks vs heurística + boundaries). O DTO continua em **S8** (BuildDocObject).
 
 ---
 
