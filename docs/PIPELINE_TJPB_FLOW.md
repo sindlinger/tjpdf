@@ -23,35 +23,56 @@ Mapa encapsulado (visão macro): `docs/PIPELINE_TJPB_CORE.md`
                      |
                      v
       [S3 Segmentação (etapa única)]
-               [S4 Try Bookmarks]
                  |
      {Bookmarks encontrados?}
           sim           não
            |             |
            v             v
- [S5 Boundaries via  [S6 DocumentSegmenter
-  Bookmarks]          (heurística)]
+ [S3a Boundaries via  [S3b DocumentSegmenter
+  Bookmarks]           (heurística)]
+ (PDFAnalyzer.cs + BookmarkExtractor.cs +    (TjpdfPipeline.Core/Utils/
+  PipelineTjpbCommand.cs)                      DocumentSegmenter.cs)
            \\           /
             \\         /
              v       v
-     [S7 Document Boundaries]
+     [S3c Document Boundaries]
+     (DocumentBoundary model)
                      |
                      v
-     [S8 BuildDocObject (DTO por documento)]
+     [S7 BuildDocObject (DTO por documento)]
+     (PipelineTjpbCommand.cs: BuildDocObject)
           |   - monta chaves de header/footer/origem/assinatura no DTO
           |   - define doc_label/doc_type
           |   - valida despacho/certidão/requerimento
           v
-   [S9 Field Extraction (YAML + Directed + Specialized)]
+   [S8 Field Extraction (YAML + Directed + Specialized)]
                      |
                      v
-             [S10 JSON per Document]
+             [S9 JSON per Document]
                      |
                      v
-               [S11 Postgres Persist]
+               [S10 Postgres Persist]
 ```
 
-**Nota:** a etapa **S3** engloba os procedimentos internos **S4–S7** (bookmarks vs heurística + boundaries). O DTO continua em **S8** (BuildDocObject).
+**Nota:** a etapa **S3** engloba os procedimentos internos **S3a–S3c** (bookmarks vs heurística + boundaries). O DTO começa em **S7** (BuildDocObject).
+
+### S3 — Núcleo (arquivos e funções)
+
+**Bookmarks (quando existem)**
+- **Extração/flatten do outline**: `src/TjpdfPipeline.Core/PDFAnalyzer.cs`
+  - `ExtractBookmarkStructure()`, `FlattenBookmarks(...)`
+- **Parser de outline**: `src/TjpdfPipeline.Core/Utils/BookmarkExtractor.cs`
+- **Conversão em boundaries**: `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
+  - `ExtractBookmarksForRange(...)`, `BuildBookmarkBoundaries(...)`
+
+**DocumentSegmenter (quando não há bookmarks)**
+- **Heurísticas de segmentação**: `src/TjpdfPipeline.Core/Utils/DocumentSegmenter.cs`
+  - `CalculatePageScores(...)` usa padrões iniciais, assinaturas finais, densidade, mudança de fontes, mudança de tamanho de página, assinatura por imagem, vizinhança, texto em margem superior e headers em maiúsculas.
+  - `IdentifyBoundaries(...)`, `GroupAdjacentPages(...)`, `ValidateAndAdjust(...)`
+
+**Modelo de boundary**
+- `src/TjpdfPipeline.Core/Models/DocumentSegmentationConfig.cs`
+  - `DocumentBoundary`
 
 ---
 
