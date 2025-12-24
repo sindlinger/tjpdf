@@ -47,4 +47,6 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 - PDFAnalyzer + fetch-bookmark-titles: agora compartilham `BookmarkExtractor` (Outlines + fallback `/Outlines` + NameTree).
 - PDFAnalyzer: tabulação do `PageText` agora colapsa letras espaçadas (ex.: “P O D E R” → “PODER”) preservando separação entre palavras.
 - Assinatura: evita falso positivo (“Assinatura” sem nome) e faz fallback de `signer` buscando em todo o texto do documento.
+- Assinatura: nova ordem de preferência (digital → SEI → rodapé → fulltext → lastline), e `lastline` desativado para anexos.
+- `pipeline-tjpb`: flag `--debug-signer` adiciona `signer_candidates` no JSON.
 - PDFAnalyzer: texto tabulado mantém fallback para texto extraído (não zera quando a tabulação falha).

@@ -66,6 +66,7 @@ namespace FilterPDF.Commands
             bool onlyDespachos = false;
             string? signerContains = null;
             bool debugDocSummary = false;
+            bool debugSigner = false;
             bool fieldsOnly = false;
             bool printJson = false;
             string? exportCsvPath = null;
@@ -108,6 +109,7 @@ namespace FilterPDF.Commands
                 if (args[i] == "--signer-contains" && i + 1 < args.Length) signerContains = args[i + 1];
                 if (args[i] == "--config" && i + 1 < args.Length) configPath = args[i + 1];
                 if (args[i] == "--debug-docsummary") debugDocSummary = true;
+                if (args[i] == "--debug-signer") debugSigner = true;
                 if (args[i] == "--fields-only") fieldsOnly = true;
                 if (args[i] == "--print-json") printJson = true;
                 if (args[i] == "--export-csv")
@@ -258,7 +260,7 @@ namespace FilterPDF.Commands
 
                     foreach (var d in docs)
                     {
-                        var obj = BuildDocObject(d, analysis, pdfPath, fieldScripts, despachoResult, debugDocSummary);
+                        var obj = BuildDocObject(d, analysis, pdfPath, fieldScripts, despachoResult, debugDocSummary, debugSigner);
                         allDocs.Add(obj);
                         if (obj.ContainsKey("words"))
                         {
@@ -437,6 +439,7 @@ namespace FilterPDF.Commands
             Console.WriteLine("--only-despachos: filtra apenas documentos cujo doc_label/doc_type contenha 'Despacho'.");
             Console.WriteLine("--signer-contains: filtra documentos cujo signer contenha o texto informado (case-insensitive).");
             Console.WriteLine("--debug-docsummary: imprime header/footer + campos de cabeçalho/assinatura por documento e não grava no Postgres.");
+            Console.WriteLine("--debug-signer: adiciona signer_candidates (sei/footer/digital/lastline/fulltext) no JSON.");
             Console.WriteLine("--fields-only: imprime apenas os fields principais (JSON) e não grava no Postgres.");
             Console.WriteLine("--print-json: imprime o JSON completo (por processo) e não grava no Postgres.");
             Console.WriteLine("--export-csv [caminho]: gera CSV consolidado por processo (default: ./tjpb_export.csv).");
@@ -758,7 +761,7 @@ namespace FilterPDF.Commands
             return name;
         }
 
-        private Dictionary<string, object> BuildDocObject(DocumentBoundary d, PDFAnalysisResult analysis, string pdfPath, List<FieldScript> scripts, ExtractionResult? despachoResult, bool debug = false)
+        private Dictionary<string, object> BuildDocObject(DocumentBoundary d, PDFAnalysisResult analysis, string pdfPath, List<FieldScript> scripts, ExtractionResult? despachoResult, bool debug = false, bool debugSigner = false)
         {
             var docText = string.Join("\n", Enumerable.Range(d.StartPage, d.PageCount)
                                                       .Select(p => analysis.Pages[p - 1].TextInfo.PageText ?? ""));
@@ -908,7 +911,7 @@ namespace FilterPDF.Commands
             }
 
             var scriptLabel = docLabel;
-            var docMeta = BuildDocMeta(d, pdfPath, docText, lastPageText, lastTwoText, header, subHeader, footer, footerSignatureRaw, docBookmarks, analysis.Signatures, docLabel, wordsWithCoords);
+            var docMeta = BuildDocMeta(d, pdfPath, docText, lastPageText, lastTwoText, header, subHeader, footer, footerSignatureRaw, docBookmarks, analysis.Signatures, docLabel, wordsWithCoords, debugSigner);
             var laudoHash = ComputeLaudoHashSha1(docText);
             LaudoHashDbEntry? hashHit = null;
             if (_laudoHashDb != null && !string.IsNullOrWhiteSpace(laudoHash))
@@ -1457,7 +1460,7 @@ namespace FilterPDF.Commands
 
         // Doc type classification removida: usamos apenas o nome do bookmark como rótulo.
 
-        private Dictionary<string, object> BuildDocMeta(DocumentBoundary d, string pdfPath, string fullText, string lastPageText, string lastTwoText, string header, string subHeader, string footer, string footerSignatureRaw, List<Dictionary<string, object>> bookmarks, List<DigitalSignature> signatures, string docLabel, List<Dictionary<string, object>> words)
+        private Dictionary<string, object> BuildDocMeta(DocumentBoundary d, string pdfPath, string fullText, string lastPageText, string lastTwoText, string header, string subHeader, string footer, string footerSignatureRaw, List<Dictionary<string, object>> bookmarks, List<DigitalSignature> signatures, string docLabel, List<Dictionary<string, object>> words, bool debugSigner)
         {
             string originMain = ExtractOrigin(header, bookmarks, fullText, excludeGeneric: true);
             string originSub = !string.IsNullOrWhiteSpace(subHeader)
@@ -1465,9 +1468,23 @@ namespace FilterPDF.Commands
                 : ExtractSubOrigin(header, bookmarks, fullText, originMain, excludeGeneric: true);
             string originExtra = ExtractExtraOrigin(header, bookmarks, fullText, originMain, originSub);
             var sei = ExtractSeiMetadata(fullText, lastTwoText, footer, docLabel);
-            string signer = sei.Signer ?? ExtractSigner(lastTwoText, footer, footerSignatureRaw, signatures);
-            if (string.IsNullOrWhiteSpace(signer))
-                signer = ExtractSignerFromDocumentText(fullText);
+            string signatureBlock = footerSignatureRaw ?? "";
+            var signerSei = sei.Signer ?? "";
+            var scanSources = BuildSignerSources(lastPageText, footer, signatureBlock);
+            var signerFooter = ExtractSignerFromSources(scanSources);
+            if (string.IsNullOrWhiteSpace(signerFooter))
+                signerFooter = ExtractSignerFromSignatureBlock(signatureBlock);
+            var signerDigital = ExtractSignerDigital(signatures);
+            var signerFullText = ExtractSignerFromDocumentText(fullText);
+            var allowLastline = Regex.IsMatch(docLabel ?? "", @"despacho|certidao|requerimento", RegexOptions.IgnoreCase);
+            var signerLastLine = allowLastline ? ExtractSignerFromLastLine(lastPageText) : "";
+
+            string signer = !string.IsNullOrWhiteSpace(signerDigital) ? signerDigital
+                : !string.IsNullOrWhiteSpace(signerSei) ? signerSei
+                : !string.IsNullOrWhiteSpace(signerFooter) ? signerFooter
+                : !string.IsNullOrWhiteSpace(signerFullText) ? signerFullText
+                : !string.IsNullOrWhiteSpace(signerLastLine) ? signerLastLine
+                : "";
             string signedAt = sei.SignedAt ?? ExtractSignedAt(lastTwoText, footer, footerSignatureRaw);
             string dateFooter = ExtractDateFromFooter(lastTwoText, footer, header, footerSignatureRaw);
             string headerHash = HashText(header);
@@ -1492,7 +1509,7 @@ namespace FilterPDF.Commands
             var procInfo = ExtractProcessInfo(paras, sei.Process);
             var cnj = ExtractProcessCnj(fullText, procInfo.ProcessNumber, procInfo.ProcessLine);
 
-            return new Dictionary<string, object>
+            var meta = new Dictionary<string, object>
             {
                 ["origin_main"] = originMain,
                 ["origin_sub"] = originSub,
@@ -1524,6 +1541,21 @@ namespace FilterPDF.Commands
                 ["interested_bbox"] = partyBBoxes.InterestedBBox,
                 ["juizo_bbox"] = partyBBoxes.JuizoBBox
             };
+
+            if (debugSigner)
+            {
+                meta["signer_candidates"] = new Dictionary<string, object>
+                {
+                    ["sei"] = signerSei,
+                    ["footer"] = signerFooter,
+                    ["digital"] = signerDigital,
+                    ["lastline"] = signerLastLine,
+                    ["fulltext"] = signerFullText,
+                    ["picked"] = signer
+                };
+            }
+
+            return meta;
         }
 
         private string ExtractProcessCnj(string fullText, string processNumber, string processLine)
@@ -1685,7 +1717,10 @@ namespace FilterPDF.Commands
                     meta.Signer = $"{mSigner.Groups[1].Value.Trim()} - {mSigner.Groups[2].Value.Trim()}";
                 else
                 {
-                    var line = lastTwoText.Split('\n').Select(l => l.Trim()).Reverse().FirstOrDefault(l => l.Contains("–"));
+                    var line = lastTwoText.Split('\n')
+                        .Select(l => l.Trim())
+                        .Reverse()
+                        .FirstOrDefault(l => l.Contains("–") && Regex.IsMatch(l, @"assinad|assinatura|documento", RegexOptions.IgnoreCase));
                     if (!string.IsNullOrWhiteSpace(line)) meta.Signer = line;
                 }
 
@@ -2575,6 +2610,22 @@ namespace FilterPDF.Commands
         private string ExtractSigner(string lastPageText, string footer, string footerSignatureRaw, List<DigitalSignature> signatures)
         {
             string signatureBlock = footerSignatureRaw ?? "";
+            var scanSources = BuildSignerSources(lastPageText, footer, signatureBlock);
+            var candidate = ExtractSignerFromSources(scanSources);
+            if (!string.IsNullOrWhiteSpace(candidate)) return candidate;
+
+            candidate = ExtractSignerFromSignatureBlock(signatureBlock);
+            if (!string.IsNullOrWhiteSpace(candidate)) return candidate;
+
+            candidate = ExtractSignerDigital(signatures);
+            if (!string.IsNullOrWhiteSpace(candidate)) return candidate;
+
+            candidate = ExtractSignerFromLastLine(lastPageText);
+            return candidate;
+        }
+
+        private List<string> BuildSignerSources(string lastPageText, string footer, string signatureBlock)
+        {
             string[] sources =
             {
                 $"{lastPageText}\n{footer}\n{signatureBlock}",
@@ -2591,25 +2642,28 @@ namespace FilterPDF.Commands
                 if (!string.Equals(collapsed, s, StringComparison.Ordinal))
                     scanSources.Add(collapsed);
             }
+            return scanSources.Distinct().ToList();
+        }
 
-            foreach (var source in scanSources.Distinct())
+        private string ExtractSignerFromSources(IEnumerable<string> scanSources)
+        {
+            if (scanSources == null) return "";
+            foreach (var source in scanSources)
             {
-                // "Documento 27 página 2 assinado eletronicamente por: NOME - CPF: ... em 12/06/2024"
+                if (string.IsNullOrWhiteSpace(source)) continue;
+
                 var docPageSigned = Regex.Match(source, @"documento\s+\d+[^\n]{0,120}?assinado[^\n]{0,60}?por\s*[:\-]?\s*([\p{L} .'’\-]+?)(?=\s*(?:,|\(|\bcpf\b|\bem\b|\n|$|-\s*\d))", RegexOptions.IgnoreCase);
                 if (docPageSigned.Success) return docPageSigned.Groups[1].Value.Trim();
 
-                // Formato mais completo do SEI: "Documento assinado eletronicamente por NOME, <cargo>, em 12/03/2024"
                 var docSigned = Regex.Match(source, @"documento\s+assinado\s+eletronicamente\s+por\s*[:\-]?\s*([\p{L} .'’\-]+?)(?=\s*(?:,|\(|\bcpf\b|\bem\b|\n|$|-\s*\d))", RegexOptions.IgnoreCase);
                 if (docSigned.Success) return docSigned.Groups[1].Value.Trim();
 
                 var match = Regex.Match(source, @"assinado(?:\s+digitalmente|\s+eletronicamente)?\s+por\s*[:\-]?\s*([\p{L} .'’\-]+?)(?=\s*(?:,|\(|\bcpf\b|\bem\b|\n|$|-\s*\d))", RegexOptions.IgnoreCase);
                 if (match.Success) return match.Groups[1].Value.Trim();
 
-                // Digital signature block (X.509)
                 var sigMatch = Regex.Match(source, @"Assinatura(?:\s+)?:(.+)", RegexOptions.IgnoreCase);
                 if (sigMatch.Success) return sigMatch.Groups[1].Value.Trim();
 
-                // Fallback para texto colapsado (letras espaçadas), remove espaços e tenta capturar o nome
                 var compact = Regex.Replace(source, @"\s+", "");
                 var compactMatch = Regex.Match(compact,
                     @"assinado(?:digitalmente|eletronicamente)?por(?<name>[\p{L}]{5,80})(?=(?:,|em\d|tecnico|judiciario|$))",
@@ -2617,46 +2671,52 @@ namespace FilterPDF.Commands
                 if (compactMatch.Success)
                     return RestoreNameSpaces(compactMatch.Groups["name"].Value);
             }
+            return "";
+        }
 
-            if (!string.IsNullOrWhiteSpace(signatureBlock))
+        private string ExtractSignerFromSignatureBlock(string signatureBlock)
+        {
+            if (string.IsNullOrWhiteSpace(signatureBlock)) return "";
+            var sigLines = signatureBlock.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+            for (int i = 0; i < sigLines.Count; i++)
             {
-                var sigLines = signatureBlock.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
-                for (int i = 0; i < sigLines.Count; i++)
+                var line = sigLines[i];
+                if (!Regex.IsMatch(line, @"assinad|assinatura", RegexOptions.IgnoreCase)) continue;
+                var val = ExtractSignerFromSignatureLine(line);
+                if (!string.IsNullOrWhiteSpace(val)) return val;
+                if (i + 1 < sigLines.Count)
                 {
-                    var line = sigLines[i];
-                    if (!Regex.IsMatch(line, @"assinad|assinatura", RegexOptions.IgnoreCase)) continue;
-                    var val = ExtractSignerFromSignatureLine(line);
+                    val = ExtractSignerFromSignatureLine(sigLines[i + 1]);
                     if (!string.IsNullOrWhiteSpace(val)) return val;
-                    if (i + 1 < sigLines.Count)
-                    {
-                        val = ExtractSignerFromSignatureLine(sigLines[i + 1]);
-                        if (!string.IsNullOrWhiteSpace(val)) return val;
-                    }
                 }
             }
+            return "";
+        }
 
-            // Info vinda do objeto de assinatura digital (se existir)
-            if (signatures != null && signatures.Count > 0)
-            {
-                var sigName = signatures.Select(s => s.SignerName).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
-                if (!string.IsNullOrWhiteSpace(sigName)) return sigName.Trim();
-                var sigField = signatures.Select(s => s.Name).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
-                if (!string.IsNullOrWhiteSpace(sigField)) return sigField.Trim();
-            }
+        private string ExtractSignerDigital(List<DigitalSignature> signatures)
+        {
+            if (signatures == null || signatures.Count == 0) return "";
+            var sigName = signatures.Select(s => s.SignerName).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
+            if (!string.IsNullOrWhiteSpace(sigName)) return sigName.Trim();
+            var sigField = signatures.Select(s => s.Name).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
+            if (!string.IsNullOrWhiteSpace(sigField)) return sigField.Trim();
+            return "";
+        }
 
-            // Heurística: linha final com nome/cargo em maiúsculas
+        private string ExtractSignerFromLastLine(string lastPageText)
+        {
+            if (string.IsNullOrWhiteSpace(lastPageText)) return "";
             var lines = lastPageText.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
             var cargoKeywords = new[] { "diretor", "diretora", "presidente", "juiz", "juíza", "desembargador", "desembargadora", "secretário", "secretaria", "chefe", "coordenador", "coordenadora", "gerente", "perito", "analista", "assessor", "assessora", "procurador", "procuradora" };
             var namePattern = new Regex(@"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+(\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-zÁÉÍÓÚÂÊÔÃÕÇçãõâêîôûäëïöüàèìòùÿ'`\-]+){1,4}(\s*[,–-]\s*.+)?$", RegexOptions.Compiled);
             foreach (var line in lines.AsEnumerable().Reverse())
             {
                 if (line.Length < 8 || line.Length > 120) continue;
-                if (Regex.IsMatch(line, @"\d{2}[\\/]\d{2}[\\/]\d{2,4}")) continue; // data
+                if (Regex.IsMatch(line, @"\d{2}[\\/]\d{2}[\\/]\d{2,4}")) continue;
                 if (line.IndexOf("SEI", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                 if (line.IndexOf("pg.", StringComparison.OrdinalIgnoreCase) >= 0 || line.IndexOf("página", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                 if (IsGeneric(line)) continue;
-                if (line.ToLowerInvariant() == line) continue; // toda minúscula
-                // evita repetir origens ou título
+                if (line.ToLowerInvariant() == line) continue;
                 if (line.Equals(lastPageText, StringComparison.OrdinalIgnoreCase)) continue;
                 var tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length < 2) continue;
@@ -5110,7 +5170,7 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
                     TotalWords = parent.TotalWords
                 };
 
-                var obj = BuildDocObject(boundary, analysis, pdfPath, scripts, null, false);
+                var obj = BuildDocObject(boundary, analysis, pdfPath, scripts, null, false, false);
                 obj["parent_doc_label"] = ExtractDocumentName(parent);
                 obj["doc_label"] = anexos[i]["title"]?.ToString() ?? "Anexo";
                 obj["doc_type"] = "anexo_split";
