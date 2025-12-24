@@ -50,3 +50,26 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 - Assinatura: nova ordem de preferência (digital → SEI → rodapé → fulltext → lastline), e `lastline` desativado para anexos.
 - `pipeline-tjpb`: flag `--debug-signer` adiciona `signer_candidates` no JSON.
 - PDFAnalyzer: texto tabulado mantém fallback para texto extraído (não zera quando a tabulação falha).
+
+## 2025-12-24
+
+### Alterações
+- **AnchorTemplateExtractor** integrado para extração por âncoras no despacho (head/tail) usando templates anotados.
+- **Templates de despacho** adicionados em `configs/anchor_templates/`:
+  - `tjpb_despacho_head.txt`
+  - `tjpb_despacho_tail.txt`
+- DTO por documento:
+  - `doc_head_bbox_text` / `doc_head_bbox` (início do despacho → fim do 1º parágrafo).
+  - `doc_tail_bbox_text` / `doc_tail_bbox` (último parágrafo → fim do documento).
+  - `despacho_head_anchor_fields` / `despacho_tail_anchor_fields` com resultados da extração por template.
+  - `despacho_head_template_path` / `despacho_tail_template_path` para rastreio do template usado.
+- Regras de aplicação do template:
+  - **somente** no despacho validado,
+  - **somente** no despacho‑alvo (DIESP/Robson),
+  - **apenas uma vez** por processo.
+- `is_despacho_target` introduzido (detecção por conteúdo: Diretoria Especial + Robson + despacho reserva/GEORC).
+- `percentual_blank` passou a ser **critério relativo de desempate** (não mais condição rígida).
+- Novo campo **DATA_REQUISICAO**:
+  - extraído no requerimento de pagamento de honorários,
+  - gravado no DTO do requerimento,
+  - exportado no CSV consolidado.

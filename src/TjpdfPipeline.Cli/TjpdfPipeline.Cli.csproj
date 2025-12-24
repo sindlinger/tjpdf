@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TjpdfPipeline.Core\TjpdfPipeline.Core.csproj" />
+    <ProjectReference Include="..\..\submodule\src\AnchorTemplateExtractor\AnchorTemplateExtractor.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

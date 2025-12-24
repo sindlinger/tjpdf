@@ -60,6 +60,9 @@ Havia um repositório antigo mais completo (**/mnt/b/dev/sei-dashboard/fpdf-port
 - VALOR_ARBITRADO_FINAL *(não é soma)*
 - DATA_ARBITRADO_FINAL
 
+**Campo adicional (requerimento):**
+- DATA_REQUISICAO *(data do requerimento de pagamento de honorários; vai no DTO do requerimento e no CSV)*
+
 Regra do valor arbitrado final:
 - Se houver CM, usa **VALOR_ARBITRADO_CM** e **data da decisão do Conselho**.
 - Senão, usa **VALOR_ARBITRADO_DE** e **data do despacho**.
@@ -77,6 +80,7 @@ Regra do valor arbitrado final:
   - `doc_pages`, `total_pages`
   - `percentual_blank`
   - `fonts` e `words` (com fonte/tamanho por palavra)
+  - `doc_head_bbox_text` / `doc_tail_bbox_text` (despacho, quando aplicável)
 
 ### 5) Referências úteis (catálogos)
 - Catálogo de peritos ampliado (inclui arquivos adicionais em `src/PipelineTjpb/reference/peritos/`).
@@ -99,6 +103,7 @@ Consolidar a reconstrução do pipeline com foco em **extração de fields** (de
   - paragraphs
   - bands
   - fields extraídos (inclusive via YAML)
+  - anchor fields do despacho (head/tail) quando `is_despacho_valid` e `is_despacho_target`
 - Persistência no Postgres (processes.json).
 
 **Diretriz adicional (nova):** integrar todos os **ativos úteis** do repositório que contribuam para a extração dos campos (ex.: referências, heurísticas, tabelas e fontes auxiliares), sem trazer ruído desnecessário para o fluxo principal.

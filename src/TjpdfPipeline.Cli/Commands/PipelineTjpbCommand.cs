@@ -18,6 +18,7 @@ using FilterPDF.TjpbDespachoExtractor.Reference;
 using iText.Kernel.Pdf;
 using iText.Kernel.Pdf.Navigation;
 using iText.Kernel.Utils;
+using AnchorTemplateExtractor;
 
 namespace FilterPDF.Commands
 {
@@ -57,6 +58,10 @@ namespace FilterPDF.Commands
         private string _laudoHashDbPath = "";
         private Dictionary<string, string>? _laudosEspecieByEspecialidade;
         private string _laudosEspeciePath = "";
+        private ExtractionPlan? _anchorHeadPlan;
+        private ExtractionPlan? _anchorTailPlan;
+        private string _anchorHeadTemplatePath = "";
+        private string _anchorTailTemplatePath = "";
 
         public override void Execute(string[] args)
         {
@@ -86,6 +91,13 @@ namespace FilterPDF.Commands
                 Path.Combine(cwd, "../../configs/fields"),
                 Path.GetFullPath(Path.Combine(exeBase, "../../../../configs/fields"))
             };
+            string[] anchorTemplatesCandidates =
+            {
+                Path.Combine(cwd, "configs/anchor_templates"),
+                Path.Combine(cwd, "../configs/anchor_templates"),
+                Path.Combine(cwd, "../../configs/anchor_templates"),
+                Path.GetFullPath(Path.Combine(exeBase, "../../../../configs/anchor_templates"))
+            };
             string[] hashCandidates =
             {
                 Path.Combine(cwd, "docid/layout_hashes.csv"),
@@ -96,6 +108,7 @@ namespace FilterPDF.Commands
 
             string fieldScriptsPath = fieldsCandidates.FirstOrDefault(Directory.Exists)
                                       ?? throw new DirectoryNotFoundException("configs/fields não encontrado");
+            string anchorTemplatesDir = anchorTemplatesCandidates.FirstOrDefault(Directory.Exists) ?? "";
             string layoutHashesPath = hashCandidates.FirstOrDefault(File.Exists) ?? "";
 
             var fieldScripts = FieldScripts.LoadScripts(fieldScriptsPath);
@@ -145,6 +158,7 @@ namespace FilterPDF.Commands
                 _tjpbCfg = new TjpbDespachoConfig();
             }
             EnsureReferenceCaches();
+            EnsureAnchorTemplates(anchorTemplatesDir);
 
             var dir = new DirectoryInfo(inputDir);
             if (!dir.Exists)
@@ -266,9 +280,10 @@ namespace FilterPDF.Commands
                     var segmenter = new DocumentSegmenter(new DocumentSegmentationConfig());
                     var docs = bookmarkDocs.Count > 0 ? bookmarkDocs : segmenter.FindDocuments(analysis);
 
+                    var despachoAnchorState = new DespachoAnchorState();
                     foreach (var d in docs)
                     {
-                        var obj = BuildDocObject(d, analysis, pdfPath, fieldScripts, despachoResult, debugDocSummary, debugSigner);
+                        var obj = BuildDocObject(d, analysis, pdfPath, fieldScripts, despachoResult, debugDocSummary, debugSigner, despachoAnchorState);
                         allDocs.Add(obj);
                         if (obj.ContainsKey("words"))
                         {
@@ -770,7 +785,7 @@ namespace FilterPDF.Commands
             return name;
         }
 
-        private Dictionary<string, object> BuildDocObject(DocumentBoundary d, PDFAnalysisResult analysis, string pdfPath, List<FieldScript> scripts, ExtractionResult? despachoResult, bool debug = false, bool debugSigner = false)
+        private Dictionary<string, object> BuildDocObject(DocumentBoundary d, PDFAnalysisResult analysis, string pdfPath, List<FieldScript> scripts, ExtractionResult? despachoResult, bool debug = false, bool debugSigner = false, DespachoAnchorState? anchorState = null)
         {
             var docText = string.Join("\n", Enumerable.Range(d.StartPage, d.PageCount)
                                                       .Select(p => analysis.Pages[p - 1].TextInfo.PageText ?? ""));
@@ -1030,9 +1045,20 @@ namespace FilterPDF.Commands
             var minPages = cfg.Thresholds.MinPages > 0 ? cfg.Thresholds.MinPages : 2;
             var blankMaxPct = cfg.Thresholds.BlankMaxPct > 0 ? cfg.Thresholds.BlankMaxPct : 15;
             var densityOk = percentualBlank <= blankMaxPct;
-            var isDespachoValid = isDespachoCandidate && d.PageCount >= minPages && densityOk && MatchesOrigin(docMeta, "despacho") && MatchesSigner(docMeta);
+            var isDespachoTarget = IsTargetDespachoTemplate(docText);
+            docMeta["blank_threshold"] = blankMaxPct;
+            docMeta["density_ok"] = densityOk;
+            docMeta["is_despacho_target"] = isDespachoTarget;
+            var isDespachoValid = isDespachoCandidate && d.PageCount >= minPages && MatchesOrigin(docMeta, "despacho") && MatchesSigner(docMeta);
             var isCertidaoValid = isCertidaoCandidate && MatchesOrigin(docMeta, "certidao") && MatchesSigner(docMeta);
             var isDespachoShort = isDespachoCandidate && d.PageCount < 2;
+            var shouldApplyAnchor = isDespachoValid && isDespachoTarget && (anchorState?.Applied != true);
+            if (shouldApplyAnchor)
+            {
+                ApplyDespachoHeadTailBBoxes(docMeta, despachoMatch, wordsWithCoords, d.StartPage, d.EndPage);
+                ApplyAnchorExtraction(docMeta);
+                if (anchorState != null) anchorState.Applied = true;
+            }
 
             var forcedBucket = isDespachoValid ? "principal" : null;
             var extractedFields = ExtractFields(docText, wordsWithCoords, d, pdfPath, scripts, forcedBucket, scriptLabel);
@@ -1079,6 +1105,14 @@ namespace FilterPDF.Commands
             var requerimentoFieldsOnly = isRequerimento
                 ? normalizedFields.Where(f => string.Equals(f.GetValueOrDefault("method")?.ToString(), "requerimento_extractor", StringComparison.OrdinalIgnoreCase)).ToList()
                 : new List<Dictionary<string, object>>();
+            if (isRequerimento)
+            {
+                var dataReq = PickBestFieldValue(requerimentoFieldsOnly, "DATA_REQUISICAO");
+                if (string.IsNullOrWhiteSpace(dataReq))
+                    dataReq = PickBestFieldValue(requerimentoFieldsOnly, "DATA");
+                if (!string.IsNullOrWhiteSpace(dataReq))
+                    docMeta["data_requisicao"] = dataReq;
+            }
 
             var obj = new Dictionary<string, object>
             {
@@ -1224,6 +1258,7 @@ namespace FilterPDF.Commands
                 "valor_arbitrado_cm",
                 "valor_arbitrado_final",
                 "data_arbitrado_final",
+                "data_requisicao",
                 "despacho_label",
                 "certidao_label",
                 "requerimento_label"
@@ -1328,6 +1363,10 @@ namespace FilterPDF.Commands
                     dataFinal = PickMeta("signed_at", despachoDoc, requerimentoDoc) ?? "";
             }
 
+            var dataRequisicao = PickField("DATA_REQUISICAO", requerimentoDoc);
+            if (string.IsNullOrWhiteSpace(dataRequisicao))
+                dataRequisicao = PickMeta("data_requisicao", requerimentoDoc);
+
             var comarca = PickField("COMARCA", despachoDoc, certidaoDoc, fallbackDoc);
             if (string.IsNullOrWhiteSpace(comarca))
                 comarca = PickMeta("comarca", despachoDoc, certidaoDoc, fallbackDoc);
@@ -1354,6 +1393,7 @@ namespace FilterPDF.Commands
                 ["valor_arbitrado_cm"] = valorCm ?? "",
                 ["valor_arbitrado_final"] = valorFinal ?? "",
                 ["data_arbitrado_final"] = dataFinal ?? "",
+                ["data_requisicao"] = dataRequisicao ?? "",
                 ["despacho_label"] = despachoDoc?.GetValueOrDefault("doc_label")?.ToString() ?? "",
                 ["certidao_label"] = certidaoDoc?.GetValueOrDefault("doc_label")?.ToString() ?? "",
                 ["requerimento_label"] = requerimentoDoc?.GetValueOrDefault("doc_label")?.ToString() ?? ""
@@ -1368,6 +1408,7 @@ namespace FilterPDF.Commands
             return candidates
                 .OrderByDescending(d => GetInt(d, "doc_pages"))
                 .ThenByDescending(d => GetInt(d, "end_page"))
+                .ThenBy(d => GetDouble(d, "percentual_blank"))
                 .FirstOrDefault();
         }
 
@@ -1390,6 +1431,20 @@ namespace FilterPDF.Commands
             if (v is long l) return (int)l;
             if (int.TryParse(v.ToString(), out var r)) return r;
             return 0;
+        }
+
+        private double GetDouble(Dictionary<string, object> doc, string key)
+        {
+            if (doc == null || !doc.TryGetValue(key, out var v) || v == null) return double.MaxValue;
+            if (v is double d) return d;
+            if (v is float f) return f;
+            if (v is decimal m) return (double)m;
+            if (v is int i) return i;
+            if (v is long l) return l;
+            var s = v.ToString();
+            if (double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+            if (double.TryParse(s, NumberStyles.Any, new CultureInfo("pt-BR"), out parsed)) return parsed;
+            return double.MaxValue;
         }
 
         private bool GetBool(Dictionary<string, object> doc, string key)
@@ -1421,6 +1476,7 @@ namespace FilterPDF.Commands
 
             Ensure("certidao_date", "");
             Ensure("despacho_date", "");
+            Ensure("data_requisicao", "");
             Ensure("process_bbox", new Dictionary<string, double>());
             Ensure("interested_bbox", new Dictionary<string, double>());
             Ensure("juizo_bbox", new Dictionary<string, double>());
@@ -1464,6 +1520,7 @@ namespace FilterPDF.Commands
             {
                 ["processo_administrativo"] = Get("PROCESSO_ADMINISTRATIVO"),
                 ["processo_judicial"] = Get("PROCESSO_JUDICIAL"),
+                ["data_requisicao"] = Get("DATA_REQUISICAO"),
                 ["perito"] = Get("PERITO"),
                 ["perito_cpf"] = Get("CPF_PERITO"),
                 ["especialidade"] = Get("ESPECIALIDADE"),
@@ -1564,10 +1621,6 @@ namespace FilterPDF.Commands
             bool isDespachoLabel = Regex.IsMatch(docLabel ?? "", "despacho", RegexOptions.IgnoreCase);
             string docHead = "";
             string docTail = "";
-            string docHeadBBoxText = "";
-            string docTailBBoxText = "";
-            Dictionary<string, object>? docHeadBBox = null;
-            Dictionary<string, object>? docTailBBox = null;
             if (isDespachoLabel)
             {
                 var headParts = new List<string>();
@@ -1581,14 +1634,6 @@ namespace FilterPDF.Commands
                 if (!string.IsNullOrWhiteSpace(footer)) tailParts.Add(footer);
                 if (!string.IsNullOrWhiteSpace(footerSignatureRaw)) tailParts.Add(footerSignatureRaw);
                 docTail = string.Join("\n", tailParts.Where(p => !string.IsNullOrWhiteSpace(p)));
-
-                var headResult = ExtractHeadBBox(words, firstParaObj);
-                docHeadBBoxText = headResult.Text;
-                docHeadBBox = headResult.BBox;
-
-                var tailResult = ExtractTailBBox(words, lastParaObj);
-                docTailBBoxText = tailResult.Text;
-                docTailBBox = tailResult.BBox;
             }
             var party = ExtractPartyInfo(fullText);
             var partyBBoxes = ExtractPartyBBoxes(paras, d.StartPage, d.EndPage);
@@ -1628,15 +1673,6 @@ namespace FilterPDF.Commands
                 ["juizo_bbox"] = partyBBoxes.JuizoBBox
             };
 
-            if (!string.IsNullOrWhiteSpace(docHeadBBoxText))
-                meta["doc_head_bbox_text"] = docHeadBBoxText;
-            if (docHeadBBox != null)
-                meta["doc_head_bbox"] = docHeadBBox;
-            if (!string.IsNullOrWhiteSpace(docTailBBoxText))
-                meta["doc_tail_bbox_text"] = docTailBBoxText;
-            if (docTailBBox != null)
-                meta["doc_tail_bbox"] = docTailBBox;
-
             if (debugSigner)
             {
                 meta["signer_candidates"] = new Dictionary<string, object>
@@ -1653,26 +1689,420 @@ namespace FilterPDF.Commands
             return meta;
         }
 
-        private (string Text, Dictionary<string, object>? BBox) ExtractHeadBBox(List<Dictionary<string, object>> words, ParagraphObj? firstPara)
+        private void ApplyDespachoHeadTailBBoxes(Dictionary<string, object> meta, DespachoDocumentInfo? despachoMatch, List<Dictionary<string, object>> words, int startPage, int endPage)
         {
-            if (words == null || words.Count == 0 || firstPara == null) return ("", null);
-            int page = firstPara.Page;
-            double cutoff = firstPara.Ny0;
+            if (meta == null || words == null || words.Count == 0)
+                return;
+
+            if (despachoMatch == null)
+            {
+                ApplyHeadTailFromWords(meta, words, startPage, endPage);
+                return;
+            }
+
+            int start = despachoMatch.StartPage1 > 0 ? despachoMatch.StartPage1 : startPage;
+            int end = despachoMatch.EndPage1 > 0 ? despachoMatch.EndPage1 : endPage;
+
+            var headPara = PickHeadParagraphFromDespacho(despachoMatch, start);
+            var head = ExtractHeadBBox(words, headPara);
+            if (!string.IsNullOrWhiteSpace(head.Text))
+                meta["doc_head_bbox_text"] = head.Text;
+            if (head.BBox != null)
+                meta["doc_head_bbox"] = head.BBox;
+
+            var tailPara = PickTailParagraphFromDespacho(despachoMatch, end);
+            var tail = ExtractTailBBox(words, tailPara, end);
+            if (!string.IsNullOrWhiteSpace(tail.Text))
+                meta["doc_tail_bbox_text"] = tail.Text;
+            if (tail.BBox != null)
+                meta["doc_tail_bbox"] = tail.BBox;
+        }
+
+        private void EnsureAnchorTemplates(string anchorTemplatesDir)
+        {
+            if (string.IsNullOrWhiteSpace(anchorTemplatesDir))
+                return;
+
+            _anchorHeadTemplatePath = Path.Combine(anchorTemplatesDir, "tjpb_despacho_head.txt");
+            _anchorTailTemplatePath = Path.Combine(anchorTemplatesDir, "tjpb_despacho_tail.txt");
+
+            if (_anchorHeadPlan == null && File.Exists(_anchorHeadTemplatePath))
+                _anchorHeadPlan = LoadAnchorPlan(_anchorHeadTemplatePath);
+
+            if (_anchorTailPlan == null && File.Exists(_anchorTailTemplatePath))
+                _anchorTailPlan = LoadAnchorPlan(_anchorTailTemplatePath);
+        }
+
+        private ExtractionPlan? LoadAnchorPlan(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    return null;
+
+                var annotated = File.ReadAllText(path);
+                var parser = new TemplateAnnotatedParser();
+                var typed = parser.BuildTypedTemplate(annotated);
+                return new TemplateCompiler().Compile(typed, new CompileOptions());
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[pipeline-tjpb] WARN anchor-template '{path}': {ex.Message}");
+                return null;
+            }
+        }
+
+        private void ApplyAnchorExtraction(Dictionary<string, object> docMeta)
+        {
+            if (docMeta == null) return;
+            if (_anchorHeadPlan == null && _anchorTailPlan == null) return;
+
+            if (_anchorHeadPlan != null &&
+                docMeta.TryGetValue("doc_head_bbox_text", out var headObj) &&
+                !string.IsNullOrWhiteSpace(headObj?.ToString()))
+            {
+                var headText = headObj?.ToString() ?? "";
+                docMeta["despacho_head_anchor_fields"] = ExtractAnchorFields(_anchorHeadPlan, headText, "despacho_head");
+                if (!string.IsNullOrWhiteSpace(_anchorHeadTemplatePath))
+                    docMeta["despacho_head_template_path"] = _anchorHeadTemplatePath;
+            }
+
+            if (_anchorTailPlan != null &&
+                docMeta.TryGetValue("doc_tail_bbox_text", out var tailObj) &&
+                !string.IsNullOrWhiteSpace(tailObj?.ToString()))
+            {
+                var tailText = tailObj?.ToString() ?? "";
+                docMeta["despacho_tail_anchor_fields"] = ExtractAnchorFields(_anchorTailPlan, tailText, "despacho_tail");
+                if (!string.IsNullOrWhiteSpace(_anchorTailTemplatePath))
+                    docMeta["despacho_tail_template_path"] = _anchorTailTemplatePath;
+            }
+        }
+
+        private List<Dictionary<string, object>> ExtractAnchorFields(ExtractionPlan plan, string text, string section)
+        {
+            var engine = new AnchorExtractionEngine();
+            var normalized = TextUtils.CollapseSpacedLettersText(text);
+            if (string.IsNullOrWhiteSpace(normalized))
+                normalized = text ?? "";
+
+            var results = engine.Extract(plan, normalized);
+            var list = new List<Dictionary<string, object>>(results.Count);
+            foreach (var f in results)
+            {
+                var item = new Dictionary<string, object>
+                {
+                    ["section"] = section,
+                    ["field_id"] = f.FieldId,
+                    ["field_key"] = f.FieldKey,
+                    ["occurrence"] = f.OccurrenceIndex,
+                    ["type"] = f.Type.ToString(),
+                    ["value"] = f.Value,
+                    ["start"] = f.StartIndex,
+                    ["end"] = f.EndIndex,
+                    ["missing"] = f.Missing,
+                    ["confidence"] = f.Confidence
+                };
+                if (!string.IsNullOrWhiteSpace(f.Notes))
+                    item["notes"] = f.Notes;
+                list.Add(item);
+            }
+            return list;
+        }
+
+        private void ApplyHeadTailFromWords(Dictionary<string, object> meta, List<Dictionary<string, object>> words, int startPage, int endPage)
+        {
+            var paras = BuildParagraphSegmentsFromWordDicts(words, startPage, endPage);
+            var ordered = paras
+                .OrderBy(p => p.Page1)
+                .ThenByDescending(p => p.BBox?.Y1 ?? 0)
+                .ToList();
+
+            var headPara = ordered.FirstOrDefault(p => p.Page1 == startPage && !IsHeaderOrMetaParagraph(p.Text))
+                           ?? ordered.FirstOrDefault(p => p.Page1 == startPage);
+
+            var head = ExtractHeadBBox(words, headPara);
+            if (!string.IsNullOrWhiteSpace(head.Text))
+                meta["doc_head_bbox_text"] = head.Text;
+            if (head.BBox != null)
+                meta["doc_head_bbox"] = head.BBox;
+
+            var pages = new HashSet<int> { endPage };
+            if (endPage - 1 >= 1) pages.Add(endPage - 1);
+            var tailCandidates = ordered.Where(p => pages.Contains(p.Page1)).ToList();
+            var scored = tailCandidates
+                .Select(p => new { Para = p, Score = ScoreTailParagraph(p.Text) })
+                .Where(x => x.Score > 0 && !IsFooterParagraph(x.Para.Text))
+                .OrderByDescending(x => x.Score)
+                .ThenByDescending(x => x.Para.Page1)
+                .ThenByDescending(x => x.Para.BBox?.Y1 ?? 0)
+                .ToList();
+
+            var tailPara = scored.FirstOrDefault()?.Para
+                           ?? tailCandidates.FirstOrDefault(p => !IsFooterParagraph(p.Text) && (p.Text ?? "").Length >= 60)
+                           ?? tailCandidates.FirstOrDefault(p => !IsFooterParagraph(p.Text))
+                           ?? tailCandidates.FirstOrDefault();
+
+            var tail = ExtractTailBBox(words, tailPara, endPage);
+            if (!string.IsNullOrWhiteSpace(tail.Text))
+                meta["doc_tail_bbox_text"] = tail.Text;
+            if (tail.BBox != null)
+                meta["doc_tail_bbox"] = tail.BBox;
+        }
+
+        private List<ParagraphSegment> BuildParagraphSegmentsFromWordDicts(List<Dictionary<string, object>> words, int startPage, int endPage)
+        {
+            var result = new List<ParagraphSegment>();
+            if (words == null || words.Count == 0) return result;
+
+            var cfg = _tjpbCfg ?? new TjpbDespachoConfig();
+            var lineMergeY = cfg.Thresholds?.Paragraph?.LineMergeY ?? 0.015;
+            var wordGapX = cfg.Thresholds?.Paragraph?.WordGapX ?? cfg.TemplateRegions?.WordGapX ?? 0.012;
+            var paragraphGapY = cfg.Thresholds?.Paragraph?.ParagraphGapY ?? 0.03;
+
+            for (int p = startPage; p <= endPage; p++)
+            {
+                var pageWords = new List<WordInfo>();
+                foreach (var w in words)
+                {
+                    if (!w.TryGetValue("page", out var pw) || pw == null) continue;
+                    if (!int.TryParse(pw.ToString(), out var page) || page != p) continue;
+                    var text = w.GetValueOrDefault("text")?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+                    pageWords.Add(new WordInfo
+                    {
+                        Text = text,
+                        NormX0 = Convert.ToSingle(w.GetValueOrDefault("nx0") ?? 0f),
+                        NormY0 = Convert.ToSingle(w.GetValueOrDefault("ny0") ?? 0f),
+                        NormX1 = Convert.ToSingle(w.GetValueOrDefault("nx1") ?? 0f),
+                        NormY1 = Convert.ToSingle(w.GetValueOrDefault("ny1") ?? 0f)
+                    });
+                }
+                if (pageWords.Count == 0) continue;
+                var lines = LineBuilder.BuildLines(pageWords, p, lineMergeY, wordGapX);
+                var paras = ParagraphBuilder.BuildParagraphs(lines, paragraphGapY);
+                result.AddRange(paras);
+            }
+            return result;
+        }
+
+        private ParagraphInfo? PickHeadParagraphFromDespacho(DespachoDocumentInfo despachoMatch, int startPage)
+        {
+            if (despachoMatch == null) return null;
+            var paras = despachoMatch.Paragraphs
+                .Where(p => p.BBoxN != null && p.Page1 == startPage)
+                .OrderByDescending(p => p.BBoxN!.Y1)
+                .ToList();
+
+            if (paras.Count == 0)
+            {
+                paras = despachoMatch.Paragraphs
+                    .Where(p => p.BBoxN != null)
+                    .OrderByDescending(p => p.Page1)
+                    .ThenByDescending(p => p.BBoxN!.Y1)
+                    .ToList();
+            }
+
+            if (paras.Count == 0) return null;
+
+            var preferred = paras.FirstOrDefault(p => IsPreferredHeadParagraph(p.Text));
+            if (preferred != null) return preferred;
+
+            var longPara = paras.FirstOrDefault(p => (p.Text ?? "").Length >= 120 && !IsHeaderOrMetaParagraph(p.Text));
+            if (longPara != null) return longPara;
+
+            var candidate = paras.FirstOrDefault(p => !IsHeaderOrMetaParagraph(p.Text));
+            return candidate ?? paras.FirstOrDefault();
+        }
+
+        private ParagraphInfo? PickTailParagraphFromDespacho(DespachoDocumentInfo despachoMatch, int endPage)
+        {
+            if (despachoMatch == null) return null;
+            var pages = new HashSet<int> { endPage };
+            if (endPage - 1 >= 1)
+                pages.Add(endPage - 1);
+
+            var paras = despachoMatch.Paragraphs
+                .Where(p => p.BBoxN != null && pages.Contains(p.Page1))
+                .OrderByDescending(p => p.Page1)
+                .ThenBy(p => p.BBoxN!.Y0)
+                .ToList();
+
+            if (paras.Count == 0)
+            {
+                paras = despachoMatch.Paragraphs
+                    .Where(p => p.BBoxN != null)
+                    .OrderByDescending(p => p.Page1)
+                    .ThenBy(p => p.BBoxN!.Y0)
+                    .ToList();
+            }
+
+            if (paras.Count == 0) return null;
+
+            var scored = paras
+                .Select(p => new { Para = p, Score = ScoreTailParagraph(p.Text) })
+                .Where(x => x.Score > 0 && !IsFooterParagraph(x.Para.Text))
+                .OrderByDescending(x => x.Score)
+                .ThenByDescending(x => x.Para.Page1)
+                .ThenByDescending(x => x.Para.BBoxN!.Y1)
+                .ToList();
+
+            if (scored.Count > 0)
+                return scored.First().Para;
+
+            var candidate = paras.FirstOrDefault(p => !IsFooterParagraph(p.Text) && (p.Text ?? "").Length >= 60);
+            if (candidate != null) return candidate;
+
+            candidate = paras.FirstOrDefault(p => !IsFooterParagraph(p.Text));
+            return candidate ?? paras.FirstOrDefault();
+        }
+
+        private bool IsPreferredHeadParagraph(string? text)
+        {
+            var norm = NormalizeSimple(text ?? "");
+            if (string.IsNullOrWhiteSpace(norm)) return false;
+            return ContainsLoose(norm, "os presentes autos") ||
+                   ContainsLoose(norm, "presentes autos") ||
+                   ContainsLoose(norm, "versam sobre");
+        }
+
+        private bool IsHeaderOrMetaParagraph(string? text)
+        {
+            var norm = NormalizeSimple(text ?? "");
+            if (string.IsNullOrWhiteSpace(norm)) return true;
+            if (norm.Length < 40) return true;
+            if (ContainsLoose(norm, "despacho")) return true;
+            if (ContainsLoose(norm, "processo")) return true;
+            if (ContainsLoose(norm, "requerente")) return true;
+            if (ContainsLoose(norm, "interessado")) return true;
+            if (ContainsLoose(norm, "poder judiciario")) return true;
+            if (ContainsLoose(norm, "tribunal de justica")) return true;
+            if (ContainsLoose(norm, "diretoria especial")) return true;
+            return false;
+        }
+
+        private bool IsFooterParagraph(string? text)
+        {
+            var norm = NormalizeSimple(text ?? "");
+            if (string.IsNullOrWhiteSpace(norm)) return true;
+            if (ContainsLoose(norm, "documento assinado eletronicamente")) return true;
+            if (ContainsLoose(norm, "assinado eletronicamente")) return true;
+            if (ContainsLoose(norm, "diretor") && norm.Length < 120) return true;
+            if (ContainsLoose(norm, "juiz") && norm.Length < 120) return true;
+            if (ContainsLoose(norm, "diretoria especial") && norm.Length < 120) return true;
+            if (ContainsLoose(norm, "joao pessoa") && ContainsLoose(norm, "pb")) return true;
+            if (ContainsLoose(norm, "codigo verificador")) return true;
+            if (ContainsLoose(norm, "crc")) return true;
+            if (ContainsLoose(norm, "autenticidade deste documento")) return true;
+            if (ContainsLoose(norm, "sei") && ContainsLoose(norm, "/ pg")) return true;
+            return false;
+        }
+
+        private int ScoreTailParagraph(string? text)
+        {
+            var norm = NormalizeSimple(text ?? "");
+            if (string.IsNullOrWhiteSpace(norm)) return 0;
+            int score = 0;
+            if (ContainsLoose(norm, "em razao do exposto")) score += 10;
+            if (ContainsLoose(norm, "encaminhem-se")) score += 8;
+            if (ContainsLoose(norm, "gerencia de programacao orcamentaria")) score += 6;
+            if (ContainsLoose(norm, "georc")) score += 6;
+            if (ContainsLoose(norm, "reserva orcamentaria")) score += 4;
+            if (ContainsLoose(norm, "arbitrad")) score += 1;
+            if (ContainsLoose(norm, "perito")) score += 1;
+            return score;
+        }
+
+        private bool ContainsLoose(string norm, string phrase)
+        {
+            if (string.IsNullOrWhiteSpace(norm) || string.IsNullOrWhiteSpace(phrase)) return false;
+            var p = phrase.ToLowerInvariant();
+            if (norm.Contains(p)) return true;
+            var tightNorm = norm.Replace(" ", "");
+            var tightPhrase = p.Replace(" ", "");
+            return tightNorm.Contains(tightPhrase);
+        }
+
+        private (string Text, Dictionary<string, object>? BBox) ExtractHeadBBox(List<Dictionary<string, object>> words, ParagraphInfo? headPara)
+        {
+            if (words == null || words.Count == 0 || headPara?.BBoxN == null) return ("", null);
+            int page = headPara.Page1;
+            double cutoff = headPara.BBoxN.Y0;
             var selected = words
                 .Where(w => Convert.ToInt32(w["page"]) == page && Convert.ToDouble(w["ny0"]) >= cutoff)
                 .ToList();
             return BuildTextAndBBox(selected, "doc_head_bbox");
         }
 
-        private (string Text, Dictionary<string, object>? BBox) ExtractTailBBox(List<Dictionary<string, object>> words, ParagraphObj? lastPara)
+        private (string Text, Dictionary<string, object>? BBox) ExtractTailBBox(List<Dictionary<string, object>> words, ParagraphInfo? tailPara, int endPage)
         {
-            if (words == null || words.Count == 0 || lastPara == null) return ("", null);
-            int page = lastPara.Page;
-            double cutoff = lastPara.Ny1;
+            if (words == null || words.Count == 0 || tailPara?.BBoxN == null) return ("", null);
+            int page = tailPara.Page1;
+            double cutoff = tailPara.BBoxN.Y1;
+            int end = endPage > 0 ? endPage : page;
             var selected = words
                 .Where(w =>
                 {
                     int p = Convert.ToInt32(w["page"]);
+                    if (p > end) return false;
+                    if (p > page) return true;
+                    if (p < page) return false;
+                    return Convert.ToDouble(w["ny1"]) <= cutoff;
+                })
+                .ToList();
+            return BuildTextAndBBox(selected, "doc_tail_bbox");
+        }
+
+        private (string Text, Dictionary<string, object>? BBox) ExtractHeadBBox(List<Dictionary<string, object>> words, ParagraphSegment? headPara)
+        {
+            if (words == null || words.Count == 0 || headPara?.BBox == null) return ("", null);
+            int page = headPara.Page1;
+            double cutoff = headPara.BBox.Y0;
+            var selected = words
+                .Where(w => Convert.ToInt32(w["page"]) == page && Convert.ToDouble(w["ny0"]) >= cutoff)
+                .ToList();
+            return BuildTextAndBBox(selected, "doc_head_bbox");
+        }
+
+        private (string Text, Dictionary<string, object>? BBox) ExtractTailBBox(List<Dictionary<string, object>> words, ParagraphSegment? tailPara, int endPage)
+        {
+            if (words == null || words.Count == 0 || tailPara?.BBox == null) return ("", null);
+            int page = tailPara.Page1;
+            double cutoff = tailPara.BBox.Y1;
+            int end = endPage > 0 ? endPage : page;
+            var selected = words
+                .Where(w =>
+                {
+                    int p = Convert.ToInt32(w["page"]);
+                    if (p > end) return false;
+                    if (p > page) return true;
+                    if (p < page) return false;
+                    return Convert.ToDouble(w["ny1"]) <= cutoff;
+                })
+                .ToList();
+            return BuildTextAndBBox(selected, "doc_tail_bbox");
+        }
+        private (string Text, Dictionary<string, object>? BBox) ExtractHeadBBox(List<Dictionary<string, object>> words, ParagraphObj? headPara)
+        {
+            if (words == null || words.Count == 0 || headPara == null) return ("", null);
+            int page = headPara.Page;
+            double cutoff = headPara.Ny0;
+            var selected = words
+                .Where(w => Convert.ToInt32(w["page"]) == page && Convert.ToDouble(w["ny0"]) >= cutoff)
+                .ToList();
+            return BuildTextAndBBox(selected, "doc_head_bbox");
+        }
+
+        private (string Text, Dictionary<string, object>? BBox) ExtractTailBBox(List<Dictionary<string, object>> words, ParagraphObj? tailPara, int endPage)
+        {
+            if (words == null || words.Count == 0 || tailPara == null) return ("", null);
+            int page = tailPara.Page;
+            double cutoff = tailPara.Ny1;
+            int end = endPage > 0 ? endPage : page;
+            var selected = words
+                .Where(w =>
+                {
+                    int p = Convert.ToInt32(w["page"]);
+                    if (p > end) return false;
                     if (p > page) return true;
                     if (p < page) return false;
                     return Convert.ToDouble(w["ny1"]) <= cutoff;
@@ -3782,6 +4212,10 @@ namespace FilterPDF.Commands
                 "DATA DA AUTORIZAÇÃO DA DESPESA" => "DATA",
                 "DATA DO DESPACHO" => "DATA",
                 "DATA DA CERTIDAO" => "DATA",
+                "DATA DO REQUERIMENTO" => "DATA_REQUISICAO",
+                "DATA DO REQUERIMENTO DE PAGAMENTO" => "DATA_REQUISICAO",
+                "DATA DO REQUERIMENTO DE PAGAMENTO DE HONORARIOS" => "DATA_REQUISICAO",
+                "DATA DA REQUISICAO" => "DATA_REQUISICAO",
                 _ => f.Replace(" ", "_")
             };
         }
@@ -3824,6 +4258,7 @@ namespace FilterPDF.Commands
                 case "COMARCA":
                     return NormalizeComarca(value);
                 case "DATA":
+                case "DATA_REQUISICAO":
                     var dt = NormalizeDateFlexible(value);
                     return string.IsNullOrWhiteSpace(dt) ? Regex.Replace(value, @"\s+", " ").Trim() : dt;
                 default:
@@ -3845,7 +4280,7 @@ namespace FilterPDF.Commands
                     => value.Length >= 3,
                 "PROCESSO_JUDICIAL"
                     => Regex.IsMatch(value, @"^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$"),
-                "DATA"
+                "DATA" or "DATA_REQUISICAO"
                     => Regex.IsMatch(value, @"^\d{4}-\d{2}-\d{2}$"),
                 _ => true
             };
@@ -4563,7 +4998,10 @@ namespace FilterPDF.Commands
             {
                 var iso = NormalizeDateFlexible(mDate.Groups[1].Value);
                 if (!string.IsNullOrWhiteSpace(iso))
-                    AddReq("DATA", iso, "req_data_extenso", 1.05);
+                {
+                    AddReq("DATA_REQUISICAO", iso, "req_data_extenso", 1.05);
+                    AddReq("DATA", iso, "req_data_extenso", 1.0);
+                }
             }
             else
             {
@@ -4572,7 +5010,10 @@ namespace FilterPDF.Commands
                 {
                     var iso = NormalizeDateFlexible(mDateNum.Value);
                     if (!string.IsNullOrWhiteSpace(iso))
-                        AddReq("DATA", iso, "req_data_num", 1.0);
+                    {
+                        AddReq("DATA_REQUISICAO", iso, "req_data_num", 1.0);
+                        AddReq("DATA", iso, "req_data_num", 0.95);
+                    }
                 }
             }
 
@@ -5157,6 +5598,19 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             return false;
         }
 
+        private bool IsTargetDespachoTemplate(string docText)
+        {
+            if (string.IsNullOrWhiteSpace(docText)) return false;
+            var norm = RemoveDiacritics(docText).ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(norm)) return false;
+            var hasDiretoria = ContainsLoose(norm, "diretoria especial");
+            var hasGeorc = ContainsLoose(norm, "georc") || ContainsLoose(norm, "gerencia de programacao orcamentaria");
+            var hasDespachoReserva = ContainsLoose(norm, "despacho requisicao de reserva orcamentaria") ||
+                                     ContainsLoose(norm, "despacho reserva orcamentaria");
+            var hasRobson = ContainsLoose(norm, "robson de lima");
+            return hasDiretoria && hasRobson && (hasDespachoReserva || hasGeorc);
+        }
+
         private string HashText(string text)
         {
             text ??= "";
@@ -5339,7 +5793,7 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
                     TotalWords = parent.TotalWords
                 };
 
-                var obj = BuildDocObject(boundary, analysis, pdfPath, scripts, null, false, false);
+                var obj = BuildDocObject(boundary, analysis, pdfPath, scripts, null, false, false, null);
                 obj["parent_doc_label"] = ExtractDocumentName(parent);
                 obj["doc_label"] = anexos[i]["title"]?.ToString() ?? "Anexo";
                 obj["doc_type"] = "anexo_split";
@@ -5347,6 +5801,11 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
             }
 
             return list;
+        }
+
+        private sealed class DespachoAnchorState
+        {
+            public bool Applied { get; set; }
         }
     }
 }
