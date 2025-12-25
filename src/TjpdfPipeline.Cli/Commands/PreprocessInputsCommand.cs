@@ -116,6 +116,12 @@ namespace FilterPDF.Commands
                 }
                 else
                 {
+                    if (!LooksLikePdf(src))
+                    {
+                        Console.Error.WriteLine($"[preprocess-inputs] Ignorando arquivo não-PDF: {Path.GetFileName(src)}.");
+                        skipped++;
+                        continue;
+                    }
                     ok = CopyPdfWithTitle(src, outPdf, proc);
                     if (ok) copied++; else skipped++;
                 }
@@ -168,6 +174,8 @@ namespace FilterPDF.Commands
                     using var ms = new MemoryStream();
                     using (var s = entry.Open()) { s.CopyTo(ms); }
                     ms.Position = 0;
+                    if (!LooksLikePdf(ms))
+                        continue;
                     var reader = new PdfReader(ms);
                     reader.SetUnethicalReading(true);
                     using var srcDoc = new PdfDocument(reader);
@@ -227,6 +235,42 @@ namespace FilterPDF.Commands
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[preprocess-inputs] Falha ao copiar {Path.GetFileName(srcPath)}: {ex.Message}");
+                return false;
+            }
+        }
+
+        private bool LooksLikePdf(string path)
+        {
+            try
+            {
+                using var fs = File.OpenRead(path);
+                if (fs.Length < 5) return false;
+                Span<byte> buf = stackalloc byte[5];
+                var read = fs.Read(buf);
+                if (read < 5) return false;
+                return buf[0] == (byte)'%' && buf[1] == (byte)'P' && buf[2] == (byte)'D' && buf[3] == (byte)'F' && buf[4] == (byte)'-';
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool LooksLikePdf(Stream stream)
+        {
+            try
+            {
+                if (!stream.CanSeek) return false;
+                if (stream.Length < 5) return false;
+                var pos = stream.Position;
+                Span<byte> buf = stackalloc byte[5];
+                var read = stream.Read(buf);
+                stream.Position = pos;
+                if (read < 5) return false;
+                return buf[0] == (byte)'%' && buf[1] == (byte)'P' && buf[2] == (byte)'D' && buf[3] == (byte)'F' && buf[4] == (byte)'-';
+            }
+            catch
+            {
                 return false;
             }
         }

@@ -1756,6 +1756,8 @@ NOTE ABOUT SIGNATURES: Signature search focuses on the last 30% of the page
             try
             {
                 var dir = Path.GetDirectoryName(_settingsFile);
+                if (string.IsNullOrWhiteSpace(dir))
+                    return;
                 if (!Directory.Exists(dir))
                 {
                     Directory.CreateDirectory(dir);

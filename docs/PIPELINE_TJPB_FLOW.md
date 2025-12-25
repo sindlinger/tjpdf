@@ -1,6 +1,6 @@
 # Fluxo Detalhado do Pipeline TJPB (TJPDF)
 
-Atualizado em: **2025-12-24 02:06:07 -03**
+Atualizado em: **2025-12-24 03:10:00 -03**
 
 Este documento descreve **o caminho completo** dos arquivos e a execução do pipeline **desde a ingestão**, até a geração do JSON e a persistência no Postgres. O objetivo é servir como referência única para o time (e para agentes) sobre **como o pipeline realmente opera** hoje.
 
@@ -68,11 +68,13 @@ flowchart TD
   S1p -->|no| S1b
   S1b --> S2["S2 PDFAnalyzer"]
   S2 --> S3["S3 Segmentação (etapa única)"]
-  S3 --> Q{"Bookmarks encontrados?"}
-  Q -->|sim| S3a["S3a Boundaries via Bookmarks"]
-  Q -->|não| S3b["S3b DocumentSegmenter (heurística)"]
-  S3a --> S3c["S3c Document Boundaries"]
-  S3b --> S3c
+  S3 --> Q{"Há bookmarks?"}
+  Q -->|sim| S3a["Seg. Bookmarks"]
+  S3a --> S3a1["Fetch + Num. Pags"]
+  Q -->|não| S3b["Doc. Segmenter"]
+  S3b --> S3b1["Apenas segmentação"]
+  S3a1 --> S3c["ENTREGA:\n1) Nomes dos bookmarks\n2) Número de páginas (start/end)"]
+  S3b1 --> S3c
   S3c --> S7["S7 BuildDocObject (DTO)"]
   S7 --> S8["S8 Field Extraction (YAML + Directed + Specialized)"]
   S8 --> S9["S9 JSON per Document"]
@@ -115,12 +117,248 @@ sequenceDiagram
   CLI->>OUT: JSON / Persistência PG
 ```
 
+---
+
+## Mapa completo por etapa (entrada → processamento → entrega)
+
+Este mapa **não é resumido**: ele registra **o objetivo, o que entra, o que sai e quais arquivos/funções** cada etapa utiliza.  
+As **disjunções** (ex.: Bookmarks vs DocumentSegmenter) **fazem parte da mesma etapa**.
+
+### S1 — Entrada e Pré‑processamento (ZIP/PDF)
+
+**Objetivo**  
+Padronizar a entrada para **1 PDF por processo**, preservando origem por bookmark quando a entrada vem em ZIP.
+
+**Entrada**  
+- Diretório com **PDFs e/ou ZIPs**.  
+- CLI: `pipeline-tjpb --input-dir <dir>` ou `preprocess-inputs --input-dir <dir>`.
+
+**Processamento**  
+- Detecta ZIPs.  
+- Descompacta.  
+- Mergeia PDFs internos.  
+- Cria bookmarks por arquivo (nome do PDF vira título).  
+- Gera `<processo>_arquivos.txt` com lista de PDFs originários.
+
+**Entrega**  
+- **1 diretório por processo** contendo **1 PDF final**.  
+- Bookmarks criados apenas quando a origem foi ZIP.
+
+**Arquivos e funções**  
+- `src/TjpdfPipeline.Cli/Commands/PreprocessInputsCommand.cs`
+  - `Execute(...)`, `MergeZipToPdf(...)`, `CopyPdfWithTitle(...)`, `WriteMergeList(...)`  
+- `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
+  - `PreprocessZipInbox(...)`
+
+---
+
+### S2 — PDFAnalyzer (camada RAW)
+
+**Objetivo**  
+Construir o **RAW completo** do PDF: texto, palavras/coords, headers/footers, bookmarks, assinaturas.
+
+**Entrada**  
+- PDF path final por processo.
+
+**Processamento**  
+- `AnalyzeFull()` → extração de texto/linhas/words/coords.  
+- Detecção de headers/footers.  
+- Extração de bookmarks via `BookmarkExtractor` (Outlines API + DestinationPage/NameTree).  
+- Assinaturas digitais e metadados.
+
+**Entrega**  
+- `PDFAnalysisResult` com:
+  - `Bookmarks` + `BookmarksFlat`  
+  - `Pages[].TextInfo.PageText`, `Words`, `Lines`  
+  - `Headers` / `Footers`  
+  - `DocumentInfo.TotalPages`  
+  - `Signatures`
+
+**Arquivos e funções**  
+- `src/TjpdfPipeline.Core/PDFAnalyzer.cs`
+  - `AnalyzeFull()`  
+  - `ExtractBookmarkStructure()` + `FlattenBookmarks(...)`  
+  - `AnalyzePages()` / `AnalyzePageText(...)`
+- `src/TjpdfPipeline.Core/Utils/BookmarkExtractor.cs`
+
+---
+
+### S3 — Segmentação (etapa única com disjunção interna)
+
+**Objetivo**  
+Determinar **limites de documentos** (`DocumentBoundary[]`) a partir do PDF.
+
+**Entrada**  
+- `PDFAnalysisResult` (do S2).
+
+**Processamento (disjunção interna da própria etapa S3)**  
+**S3a — Bookmarks (preferencial)**  
+- **Se houver** `BookmarksFlat`, converte bookmarks em `DocumentBoundary`.  
+- **Determinístico**: cada bookmark vira um “documento”.
+
+**S3b — DocumentSegmenter (fallback)**  
+- **Se não houver bookmarks**, roda heurísticas para detectar início/fim de documentos.
+
+**Entrega**  
+- Lista `DocumentBoundary` com `StartPage`, `EndPage`, `Title`, `RawTitle`, `FullText`, etc.
+
+**Arquivos e funções**  
+- `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
+  - `BuildBookmarkBoundaries(...)`  
+  - `ExtractBookmarksForRange(...)`
+  - **Disjunção real**:  
+    `var docs = bookmarkDocs.Count > 0 ? bookmarkDocs : segmenter.FindDocuments(analysis);`
+- `src/TjpdfPipeline.Core/Utils/DocumentSegmenter.cs`
+  - `FindDocuments(...)`
+- `src/TjpdfPipeline.Core/Models/DocumentSegmentationConfig.cs`
+
+---
+
+### S3b — DocumentSegmenter (o que tem dentro)
+
+**Objetivo**  
+Detectar boundaries por heurística **quando não existem bookmarks**.
+
+**Entrada**  
+- `PDFAnalysisResult`.
+
+**Processamento (heurísticas internas)**  
+1. **CalculatePageScores(...)** (por página):
+   - **Padrões de início** (`StartPatterns`) nas primeiras linhas.  
+   - **Assinaturas de fim** (`EndPatterns`) nas últimas linhas.  
+   - **Mudança de densidade** (word count entre páginas).  
+   - **Mudança de fonte** (Jaccard de famílias).  
+   - **Mudança de tamanho de página**.  
+   - **Assinaturas em imagem** (imagem pequena no fim da página).  
+   - **Análise de vizinhança** (diferenças com páginas próximas).  
+   - **Texto no topo** (margem superior ~10%).  
+   - **Cabeçalhos em maiúsculas**.
+
+2. **IdentifyBoundaries(...)**  
+   - Abre/fecha documentos quando `StartScore` ou `EndScore` passam thresholds.  
+   - Monta `DocumentBoundary` com indicadores de início/fim.
+
+3. **GroupAdjacentPages(...) / MergeOrphanPages(...)**  
+   - Junta páginas contíguas quando gaps são pequenos.  
+   - Evita “documentos” com páginas soltas.
+
+4. **ValidateSamePaperSize(...) / ValidateAndAdjust(...)**  
+   - Ajusta limites, valida tamanho do papel, confidence mínima.
+
+5. **EnrichDocumentInfo(...)**  
+   - Preenche `FirstPageText`, `LastPageText`, `FullText`, fontes, doc type.
+
+**Entrega**  
+- `DocumentBoundary[]` com `StartPage/EndPage`, `Confidence`, textos completos e metadados.
+
+**Arquivos e funções**  
+- `src/TjpdfPipeline.Core/Utils/DocumentSegmenter.cs`
+  - `CalculatePageScores(...)`
+  - `IdentifyBoundaries(...)`
+  - `GroupAdjacentPages(...)` / `MergeOrphanPages(...)`
+  - `ValidateAndAdjust(...)`
+  - `EnrichDocumentInfo(...)`
+
+---
+
+### S7 — BuildDocObject (DTO por documento)
+
+**Objetivo**  
+Criar um DTO **por documento** com header/footer/origem/assinatura, validar tipos e preparar extração.
+
+**Entrada**  
+- `DocumentBoundary` + `PDFAnalysisResult` + `pdfPath` + `fieldScripts`.
+
+**Processamento**  
+- Concatena texto do documento.  
+- Detecta header/footer e assinatura.  
+- Monta `doc_label` / `doc_type`.  
+- Gera `doc_head` e `doc_tail` (despacho).  
+- Valida despacho/certidão/requerimento.  
+- Aplica extração por YAML + heurísticas dirigidas + extratores especializados.  
+- (Se despacho validado e alvo) aplica **AnchorTemplateExtractor** somente no **head/tail** do despacho.
+
+**Entrega**  
+- DTO rico por documento (com `fields`, `doc_summary`, `forensics`, flags).
+
+**Arquivos e funções**  
+- `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
+  - `BuildDocObject(...)`
+  - `BuildDocSummary(...)`
+  - `ExtractFields(...)`, `ExtractDirectedValues(...)`
+  - `NormalizeAndValidateFields(...)`, `EnsureRequiredFields(...)`
+
+---
+
+### S8 — Extração de campos (YAML + Directed + Specialized)
+
+**Objetivo**  
+Extrair os 15 campos finais (e auxiliares) com regras determinísticas.
+
+**Entrada**  
+- DTO por documento (texto, summary, banding, etc).
+
+**Processamento**  
+- YAML (`configs/fields/*.yml`) + Directed rules (pipeline).  
+- DespachoExtractor / CertidaoExtraction (regras portadas).  
+- Normalização e validação.
+
+**Entrega**  
+- `fields[]` preenchidos e normalizados no DTO.
+
+**Arquivos e funções**  
+- `configs/fields/*.yml`
+- `src/TjpdfPipeline.Core/Utils/FieldScripts.cs`
+- `src/TjpdfPipeline.Core/TjpbDespachoExtractor/Extraction/*`
+
+---
+
+### S9 — Consolidação por processo
+
+**Objetivo**  
+Agrupar documentos em um único JSON por processo.
+
+**Entrada**  
+- Lista de DTOs por documento (processo).
+
+**Processamento**  
+- Agrupa por `process`.  
+- Calcula `paragraph_stats`.  
+- Injeta `pdfMeta` (sha256, pages, fileSize).
+
+**Entrega**  
+- JSON final por processo:
+  - `process`, `pdf`, `documents[]`, `paragraph_stats`.
+
+**Arquivos e funções**  
+- `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
+  - `BuildParagraphStats(...)`
+
+---
+
+### S10 — Persistência
+
+**Objetivo**  
+Gravar o JSON no Postgres.
+
+**Entrada**  
+- JSON por processo (S9).
+
+**Processamento**  
+- `PgDocStore.UpsertProcess(...)` e variantes.
+
+**Entrega**  
+- `public.processes.json` no Postgres.
+
+**Arquivos e funções**  
+- `src/TjpdfPipeline.Core/Utils/PgDocStore.cs`
+
 ### S3 — Núcleo (arquivos e funções)
 
 **Bookmarks (quando existem)**
 - **Extração/flatten do outline** (usa **iText**): `src/TjpdfPipeline.Core/PDFAnalyzer.cs`
   - `ExtractBookmarkStructure()`, `FlattenBookmarks(...)`
-- **Parser de outline** (iText `/Outlines`, `/Dests`, `/Names`): `src/TjpdfPipeline.Core/Utils/BookmarkExtractor.cs`
+- **Parser de outline** (iText Outlines API + DestinationPage/NameTree): `src/TjpdfPipeline.Core/Utils/BookmarkExtractor.cs`
 - **Conversão em boundaries**: `src/TjpdfPipeline.Cli/Commands/PipelineTjpbCommand.cs`
   - `ExtractBookmarksForRange(...)`, `BuildBookmarkBoundaries(...)`
 > **Observação**: a pipeline **usa o mesmo core** do `fetch-bookmark-titles` (PDFAnalyzer + BookmarkExtractor), lendo **títulos e páginas** dos bookmarks via iText.
@@ -222,7 +460,7 @@ Padronizar a entrada em **uma pasta por processo** contendo **um único PDF** (m
 
 **Notas importantes (qualidade do RAW)**  
 - O texto é **tabulado/espaciado** usando words/coords (métrica de gaps) para evitar “texto colado”.  
-- Bookmarks usam o **BookmarkExtractor** (mesma lógica do comando `fetch-bookmark-titles`): Outlines API + fallback `/Outlines` e resolução por **/Dest, /A e NameTree (/Dests, /Names)**.
+- Bookmarks usam o **BookmarkExtractor** (mesma lógica do comando `fetch-bookmark-titles`): Outlines API + DestinationPage/NameTree (sem fallback raw outlines/named dests).
 
 **O que o analyzer produz** (estrutura `PDFAnalysisResult`):
 - Metadados (`Metadata`, `XMPMetadata`)
@@ -260,7 +498,8 @@ Use estes comandos para validar cada etapa isoladamente:
 
 - `tjpb-s1` → executa **S1** e gera `stage1_manifest.json`
 - `tjpb-s3` → executa **S2** (RAW/PDFAnalyzer) e gera `stage3_outputs.json`
-- `tjpb-s7` → executa **S3–S7** (segmentação + BuildDocObject) e gera `stage7_outputs.json`
+- `tjpb-s5` → **alias legado do S7** (segmentação + BuildDocObject); suporta `--export-doc-dtos` para gerar os 3 JSONs finais
+- `tjpb-s7` → executa **S3–S7** (segmentação + BuildDocObject) e gera `stage7_outputs.json` (também aceita `--export-doc-dtos`)
 
 ---
 

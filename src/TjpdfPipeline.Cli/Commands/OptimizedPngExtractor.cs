@@ -30,10 +30,10 @@ namespace FilterPDF.Commands
 
         public class ExtractionTask
         {
-            public string PdfPath { get; set; }
+            public string PdfPath { get; set; } = "";
             public int PageNumber { get; set; }
-            public string OutputPath { get; set; }
-            public string PdfBaseName { get; set; }
+            public string OutputPath { get; set; } = "";
+            public string PdfBaseName { get; set; } = "";
         }
 
         public class ExtractionConfig
@@ -49,8 +49,8 @@ namespace FilterPDF.Commands
         /// <summary>
         /// High-performance parallel PNG extraction entry point
         /// </summary>
-        public static void ExtractPagesAsPng(List<PageMatch> foundPages, Dictionary<string, string> outputOptions, 
-            string currentPdfPath = null, string inputFilePath = null, bool isUsingCache = false)
+        public static void ExtractPagesAsPng(List<PageMatch> foundPages, Dictionary<string, string> outputOptions,
+            string? currentPdfPath = null, string? inputFilePath = null, bool isUsingCache = false)
         {
             var config = BuildConfigFromOptions(outputOptions);
             
@@ -133,8 +133,8 @@ namespace FilterPDF.Commands
             }
         }
 
-        private static List<ExtractionTask> BuildExtractionTasks(List<PageMatch> foundPages, ExtractionConfig config, 
-            string currentPdfPath, string inputFilePath, bool isUsingCache)
+        private static List<ExtractionTask> BuildExtractionTasks(List<PageMatch> foundPages, ExtractionConfig config,
+            string? currentPdfPath, string? inputFilePath, bool isUsingCache)
         {
             var tasks = new List<ExtractionTask>();
             var pagesByPdf = new Dictionary<string, List<PageMatch>>();
@@ -142,7 +142,7 @@ namespace FilterPDF.Commands
             // Group pages by PDF
             foreach (var page in foundPages)
             {
-                string pdfPath = ResolvePdfPath(page, currentPdfPath, inputFilePath, isUsingCache);
+                string? pdfPath = ResolvePdfPath(page, currentPdfPath, inputFilePath, isUsingCache);
                 
                 if (!string.IsNullOrEmpty(pdfPath) && File.Exists(pdfPath))
                 {
@@ -179,7 +179,7 @@ namespace FilterPDF.Commands
             return tasks;
         }
 
-        private static string ResolvePdfPath(PageMatch page, string currentPdfPath, string inputFilePath, bool isUsingCache)
+        private static string? ResolvePdfPath(PageMatch page, string? currentPdfPath, string? inputFilePath, bool isUsingCache)
         {
             // Use currentPdfPath directly since PageMatch doesn't store source path
             if (!string.IsNullOrEmpty(currentPdfPath))
@@ -241,7 +241,7 @@ namespace FilterPDF.Commands
             var cancellationToken = new CancellationTokenSource();
 
             // Start progress reporter
-            Task progressTask = null;
+            Task? progressTask = null;
             if (config.ShowProgress)
             {
                 progressTask = Task.Run(() => ProgressReporter(cancellationToken.Token));
@@ -336,7 +336,8 @@ namespace FilterPDF.Commands
             {
                 // Use a temporary name for pdftoppm output
                 string tempBaseName = Path.GetFileNameWithoutExtension(task.OutputPath);
-                string tempOutputPath = Path.Combine(Path.GetDirectoryName(task.OutputPath), tempBaseName + ".png");
+                string outputDir = Path.GetDirectoryName(task.OutputPath) ?? config.OutputDirectory;
+                string tempOutputPath = Path.Combine(outputDir, tempBaseName + ".png");
                 
                 // Processing page extraction
                 
@@ -345,8 +346,8 @@ namespace FilterPDF.Commands
                     StartInfo = new ProcessStartInfo
                     {
                         FileName = "pdftoppm",
-                        Arguments = $"-png -r {config.PngQuality} -f {task.PageNumber} -l {task.PageNumber} -singlefile \"{task.PdfPath}\" \"{Path.Combine(Path.GetDirectoryName(task.OutputPath), tempBaseName)}\"",
-                        WorkingDirectory = Path.GetDirectoryName(task.OutputPath),
+                        Arguments = $"-png -r {config.PngQuality} -f {task.PageNumber} -l {task.PageNumber} -singlefile \"{task.PdfPath}\" \"{Path.Combine(outputDir, tempBaseName)}\"",
+                        WorkingDirectory = outputDir,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
                         UseShellExecute = false,

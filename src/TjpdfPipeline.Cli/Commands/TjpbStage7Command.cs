@@ -19,6 +19,10 @@ namespace FilterPDF.Commands
             string outDir = Path.Combine(Directory.GetCurrentDirectory(), "stage7_out");
             int? maxFiles = null;
             bool printSummary = false;
+            string? exportDocDtosDir = null;
+            bool filterDespacho = false;
+            bool filterRequerimento = false;
+            bool filterCertidao = false;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -27,11 +31,19 @@ namespace FilterPDF.Commands
                 if (args[i] == "--out-dir" && i + 1 < args.Length) outDir = args[i + 1];
                 if (args[i] == "--max" && i + 1 < args.Length && int.TryParse(args[i + 1], out var m)) maxFiles = m;
                 if (args[i] == "--print-summary") printSummary = true;
+                if (args[i] == "--export-doc-dtos" && i + 1 < args.Length) exportDocDtosDir = args[i + 1];
+                if (args[i] == "--despacho" || args[i] == "-d") filterDespacho = true;
+                if (args[i] == "--requerimento" || args[i] == "-r") filterRequerimento = true;
+                if (args[i] == "--certidao" || args[i] == "-c") filterCertidao = true;
             }
 
             var passArgs = new List<string> { "--input-dir", inputDir, "--stage", "s7", "--out-dir", outDir };
             if (maxFiles.HasValue) passArgs.AddRange(new[] { "--limit", maxFiles.Value.ToString() });
             if (printSummary) passArgs.Add("--print-summary");
+            if (!string.IsNullOrWhiteSpace(exportDocDtosDir)) passArgs.AddRange(new[] { "--export-doc-dtos", exportDocDtosDir! });
+            if (filterDespacho) passArgs.Add("--despacho");
+            if (filterCertidao) passArgs.Add("--certidao");
+            if (filterRequerimento) passArgs.Add("--requerimento");
 
             var pipeline = new PipelineTjpbCommand();
             pipeline.Execute(passArgs.ToArray());
@@ -40,6 +52,8 @@ namespace FilterPDF.Commands
         public override void ShowHelp()
         {
             Console.WriteLine("tjpdf-cli tjpb-s7 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-summary]");
+            Console.WriteLine("  filtros: --despacho|-d --certidao|-c --requerimento|-r");
+            Console.WriteLine("  extra: --export-doc-dtos <dir>");
             Console.WriteLine("Executa a etapa S7 (segmentação + BuildDocObject) e grava JSON por processo.");
         }
     }

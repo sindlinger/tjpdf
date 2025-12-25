@@ -156,7 +156,7 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                         { "docType", "despacho" },
                         { "name", r.Name },
                         { "page1", r.Page1 },
-                        { "bboxN", r.BBox },
+                        { "bboxN", r.BBox ?? new BBoxN() },
                         { "text", Truncate(r.Text, 2000) }
                     });
                 }
@@ -167,7 +167,7 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                         { "docType", "certidao_cm" },
                         { "name", r.Name },
                         { "page1", r.Page1 },
-                        { "bboxN", r.BBox },
+                        { "bboxN", r.BBox ?? new BBoxN() },
                         { "text", Truncate(r.Text, 2000) }
                     });
                 }

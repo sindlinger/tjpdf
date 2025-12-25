@@ -84,7 +84,7 @@ namespace FilterPDF
         /// <summary>
         /// Extract images from Form XObjects (recursive with protection against infinite loops)
         /// </summary>
-        private static List<ImageWithData> ExtractImagesFromForm(PdfStream formStream, string formName, bool includeBase64, float pageWidth, float pageHeight, HashSet<string> visitedForms = null, int recursionDepth = 0)
+        private static List<ImageWithData> ExtractImagesFromForm(PdfStream formStream, string formName, bool includeBase64, float pageWidth, float pageHeight, HashSet<string>? visitedForms = null, int recursionDepth = 0)
         {
             var images = new List<ImageWithData>();
             
@@ -208,9 +208,9 @@ namespace FilterPDF
                 
                 // Color space
                 var colorSpace = stream.Get(iText.Kernel.Pdf.PdfName.ColorSpace);
-                if (colorSpace != null) 
+                if (colorSpace != null)
                 {
-                    image.ColorSpace = colorSpace.ToString();
+                    image.ColorSpace = colorSpace.ToString() ?? "";
                 }
                 
                 // Compression type
@@ -219,18 +219,18 @@ namespace FilterPDF
                 {
                     if (filter is PdfArray filterArray && filterArray.Size() > 0)
                     {
-                        var filterName = filterArray.GetAsName(0).ToString();
+                        var filterName = filterArray.GetAsName(0)?.ToString() ?? "";
                         image.CompressionType = filterName;
                         image.MimeType = GetMimeTypeFromFilter(filterName);
                     }
                     else if (filter is PdfName filterName)
                     {
-                        image.CompressionType = filterName.ToString();
-                        image.MimeType = GetMimeTypeFromFilter(filterName.ToString());
+                        image.CompressionType = filterName.ToString() ?? "";
+                        image.MimeType = GetMimeTypeFromFilter(filterName.ToString() ?? "");
                     }
                     else
                     {
-                        image.CompressionType = filter.ToString();
+                        image.CompressionType = filter.ToString() ?? "";
                         image.MimeType = "image/unknown";
                     }
                 }
@@ -340,7 +340,7 @@ namespace FilterPDF
         /// <param name="outputPath">Path where the PNG file will be saved</param>
         /// <param name="imageInfo">Optional image info with width, height, etc</param>
         /// <returns>True if conversion was successful, false otherwise</returns>
-        public static bool CreatePngFromBase64(string base64Data, string outputPath, ImageWithData imageInfo = null)
+        public static bool CreatePngFromBase64(string base64Data, string outputPath, ImageWithData? imageInfo = null)
         {
             try
             {

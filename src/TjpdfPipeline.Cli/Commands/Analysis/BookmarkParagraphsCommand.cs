@@ -156,7 +156,7 @@ namespace FilterPDF.Commands
 
             for (int p = startPage; p <= endPage; p++)
             {
-                var page = analysis.Pages[p - 1];
+                var page = analysis.Pages != null && p - 1 < analysis.Pages.Count ? analysis.Pages[p - 1] : null;
                 if (page?.TextInfo?.Words == null) continue;
                 foreach (var w in page.TextInfo.Words)
                 {
@@ -189,13 +189,17 @@ namespace FilterPDF.Commands
 
             if (wantFirst && first != null)
             {
-                var header = GetHeaderText(analysis.Pages[startPage - 1]);
+                var header = analysis.Pages != null && startPage - 1 < analysis.Pages.Count
+                    ? GetHeaderText(analysis.Pages[startPage - 1])
+                    : "";
                 firstText = string.IsNullOrWhiteSpace(header) ? first.Text : $"{header}\n{first.Text}";
             }
 
             if (wantLast && last != null)
             {
-                var footer = GetFooterText(analysis.Pages[endPage - 1]);
+                var footer = analysis.Pages != null && endPage - 1 < analysis.Pages.Count
+                    ? GetFooterText(analysis.Pages[endPage - 1])
+                    : "";
                 lastText = string.IsNullOrWhiteSpace(footer) ? last.Text : $"{last.Text}\n{footer}";
             }
 
@@ -281,13 +285,14 @@ namespace FilterPDF.Commands
         {
             if (ws == null || ws.Count == 0) return "";
             var sorted = ws.OrderBy(w => Convert.ToDouble(w["x0"])).ToList();
-            string result = sorted[0]["text"].ToString();
+            string result = sorted[0].TryGetValue("text", out var firstVal) ? (firstVal?.ToString() ?? "") : "";
             double avgW = sorted.Average(w => Convert.ToDouble(w["x1"]) - Convert.ToDouble(w["x0"]));
             for (int i = 1; i < sorted.Count; i++)
             {
                 double gap = Convert.ToDouble(sorted[i]["x0"]) - Convert.ToDouble(sorted[i - 1]["x1"]);
                 int spaces = (gap > avgW * 0.2) ? Math.Max(1, (int)(gap / (avgW * spaceFactor))) : 0;
-                result += new string(' ', spaces) + sorted[i]["text"];
+                var token = sorted[i].TryGetValue("text", out var tv) ? (tv?.ToString() ?? "") : "";
+                result += new string(' ', spaces) + token;
             }
             return result;
         }

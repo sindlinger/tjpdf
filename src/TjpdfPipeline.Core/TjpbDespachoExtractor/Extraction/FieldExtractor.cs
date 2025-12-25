@@ -1809,7 +1809,10 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                     snippet = TextUtils.NormalizeWhitespace(string.Join(" ", words));
             }
             if (string.IsNullOrWhiteSpace(snippet))
-                snippet = TextUtils.SafeSnippet(sourceText ?? "", Math.Max(0, matchIndex - 40), Math.Min(sourceText.Length - Math.Max(0, matchIndex - 40), 160));
+            {
+                var src = sourceText ?? "";
+                snippet = TextUtils.SafeSnippet(src, Math.Max(0, matchIndex - 40), Math.Min(src.Length - Math.Max(0, matchIndex - 40), 160));
+            }
             if (snippet.Length > 160)
                 snippet = snippet.Substring(0, 160);
             return BuildField(value, confidence, method, null, snippet, bbox, page1);
@@ -1985,9 +1988,10 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
             return info.Method == "not_found" ? NotFound() : info;
         }
 
-        private string Snip(string text, Match m)
+        private string Snip(string? text, Match m)
         {
-            return TextUtils.SafeSnippet(text, Math.Max(0, m.Index - 40), Math.Min(text.Length - Math.Max(0, m.Index - 40), 160));
+            var src = text ?? "";
+            return TextUtils.SafeSnippet(src, Math.Max(0, m.Index - 40), Math.Min(src.Length - Math.Max(0, m.Index - 40), 160));
         }
 
         private string CleanPartyName(string value)

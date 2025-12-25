@@ -40,30 +40,37 @@ namespace FilterPDF.Commands
             foreach (var src in sources.Items)
             {
                 if (maxFiles.HasValue && processed >= maxFiles.Value) break;
-                if (sources.Mode == "pdf")
+                try
                 {
-                    var analysis = new PDFAnalyzer(src.Path).AnalyzeFull();
-                    var outPath = Path.Combine(outDir, $"{src.Process}.json");
-                    File.WriteAllText(outPath, JsonConvert.SerializeObject(analysis, Formatting.Indented));
-                    outputs.Add(new Dictionary<string, string>
+                    if (sources.Mode == "pdf")
                     {
-                        ["process"] = src.Process,
-                        ["source"] = src.Path,
-                        ["output"] = outPath
-                    });
-                    processed++;
+                        var analysis = new PDFAnalyzer(src.Path).AnalyzeFull();
+                        var outPath = Path.Combine(outDir, $"{src.Process}.json");
+                        File.WriteAllText(outPath, JsonConvert.SerializeObject(analysis, Formatting.Indented));
+                        outputs.Add(new Dictionary<string, string>
+                        {
+                            ["process"] = src.Process,
+                            ["source"] = src.Path,
+                            ["output"] = outPath
+                        });
+                        processed++;
+                    }
+                    else
+                    {
+                        var outPath = Path.Combine(outDir, Path.GetFileName(src.Path));
+                        File.Copy(src.Path, outPath, true);
+                        outputs.Add(new Dictionary<string, string>
+                        {
+                            ["process"] = src.Process,
+                            ["source"] = src.Path,
+                            ["output"] = outPath
+                        });
+                        processed++;
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    var outPath = Path.Combine(outDir, Path.GetFileName(src.Path));
-                    File.Copy(src.Path, outPath, true);
-                    outputs.Add(new Dictionary<string, string>
-                    {
-                        ["process"] = src.Process,
-                        ["source"] = src.Path,
-                        ["output"] = outPath
-                    });
-                    processed++;
+                    Console.Error.WriteLine($"[tjpb-s3] WARN {src.Path}: {ex.Message}");
                 }
             }
 

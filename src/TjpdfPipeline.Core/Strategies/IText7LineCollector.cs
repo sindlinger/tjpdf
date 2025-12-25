@@ -133,7 +133,7 @@ namespace FilterPDF.Strategies
         {
             if (ordered == null || ordered.Count == 0) return string.Empty;
             var sb = new System.Text.StringBuilder();
-            TextRenderInfo prev = null;
+            TextRenderInfo? prev = null;
 
             float letterGapHint = GetMedianGap(ordered);
             foreach (var info in ordered)

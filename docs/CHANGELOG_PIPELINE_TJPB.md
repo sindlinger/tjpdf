@@ -56,8 +56,10 @@ Toda alteração de **extração de campos**, **estrutura do JSON** ou **regras/
 ### Alterações
 - **AnchorTemplateExtractor** integrado para extração por âncoras no despacho (head/tail) usando templates anotados.
 - **Templates de despacho** adicionados em `configs/anchor_templates/`:
-  - `tjpb_despacho_head.txt`
-  - `tjpb_despacho_tail.txt`
+  - `tjpb_despacho_head_nlp_input.txt` (insumo bruto)
+  - `tjpb_despacho_tail_nlp_input.txt` (insumo bruto)
+  - `tjpb_despacho_head_annotated.txt` (esperado pela pipeline quando existir)
+  - `tjpb_despacho_tail_annotated.txt` (esperado pela pipeline quando existir)
 - DTO por documento:
   - `doc_head_bbox_text` / `doc_head_bbox` (início do despacho → fim do 1º parágrafo).
   - `doc_tail_bbox_text` / `doc_tail_bbox` (último parágrafo → fim do documento).

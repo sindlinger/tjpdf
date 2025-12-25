@@ -199,7 +199,7 @@ namespace FilterPDF.Utils
             throw new ArgumentException("Invalid Postgres URI format", nameof(uri));
         }
 
-        public static long UpsertProcess(string pgUri, string sourcePath, PDFAnalysisResult analysis, BookmarkClassifier classifier, bool storeJson = false, bool storeDocuments = false, string jsonPayload = null)
+        public static long UpsertProcess(string pgUri, string sourcePath, PDFAnalysisResult analysis, BookmarkClassifier classifier, bool storeJson = false, bool storeDocuments = false, string? jsonPayload = null)
         {
             if (analysis == null) throw new ArgumentNullException(nameof(analysis));
             if (classifier == null) throw new ArgumentNullException(nameof(classifier));
@@ -288,7 +288,7 @@ namespace FilterPDF.Utils
                     cmd.Parameters.Add("@j", NpgsqlDbType.Jsonb).Value = analysisJson;
                 else
                     cmd.Parameters.AddWithValue("@j", DBNull.Value);
-                var agg = AggregateProcess(analysis);
+            var agg = AggregateProcess(analysis);
                 cmd.Parameters.AddWithValue("@tp", agg.TotalPages);
                 cmd.Parameters.Add("@tw", NpgsqlDbType.Bigint).Value = (long)agg.TotalWords;
                 cmd.Parameters.Add("@tc", NpgsqlDbType.Bigint).Value = (long)agg.TotalChars;
@@ -336,7 +336,7 @@ namespace FilterPDF.Utils
                     del.ExecuteNonQuery();
                 }
 
-                var allDocs = BuildDocuments(analysis, classifier, out var flatBookmarks);
+                var allDocs = BuildDocuments(analysis ?? new PDFAnalysisResult(), classifier, out var flatBookmarks);
 
                 foreach (var doc in allDocs)
                 {
@@ -518,24 +518,24 @@ namespace FilterPDF.Utils
 
                 var doc = new DocumentRecord
                 {
-                    RawLabel = b.Title,
-                    Macro = label.Macro,
-                    Subcat = label.Subcat,
+                    RawLabel = b.Title ?? "",
+                    Macro = label.Macro ?? "",
+                    Subcat = label.Subcat ?? "",
                     StartPage = b.StartPage,
                     EndPage = b.EndPage,
                     Pages = pages,
                     DocKey = BuildDocKey(label.Canon, ++seq, b.StartPage),
-                    HeaderOrigin = headerFooter.HeaderOrigin,
-                    HeaderTitle = headerFooter.HeaderTitle,
-                    HeaderSubtitle = headerFooter.HeaderSubtitle,
-                    FooterSigners = headerFooter.FooterSigners,
+                    HeaderOrigin = headerFooter.HeaderOrigin ?? "",
+                    HeaderTitle = headerFooter.HeaderTitle ?? "",
+                    HeaderSubtitle = headerFooter.HeaderSubtitle ?? "",
+                    FooterSigners = headerFooter.FooterSigners ?? new List<string>(),
                     FooterSignedAt = headerFooter.FooterSignedAt,
-                    FooterSignatureRaw = headerFooter.FooterSignatureRaw,
+                    FooterSignatureRaw = headerFooter.FooterSignatureRaw ?? "",
                     Meta = new Dictionary<string, object>
                     {
-                        ["canonical"] = label.Canon,
-                        ["macro"] = label.Macro,
-                        ["subcat"] = label.Subcat,
+                        ["canonical"] = label.Canon ?? "",
+                        ["macro"] = label.Macro ?? "",
+                        ["subcat"] = label.Subcat ?? "",
                         ["page_count"] = pages.Count,
                         ["total_chars"] = pages.Sum(p => p.Text?.Length ?? 0),
                         ["has_images"] = (analysis.Resources?.TotalImages ?? analysis.Statistics?.TotalImages ?? 0) > 0
@@ -602,15 +602,15 @@ namespace FilterPDF.Utils
 
         private class HeaderFooterInfo
         {
-            public string HeaderOrigin { get; set; }
-            public string HeaderTitle { get; set; }
-            public string HeaderSubtitle { get; set; }
+            public string HeaderOrigin { get; set; } = "";
+            public string HeaderTitle { get; set; } = "";
+            public string HeaderSubtitle { get; set; } = "";
             public List<string> FooterSigners { get; set; } = new();
             public DateTime? FooterSignedAt { get; set; }
-            public string FooterSignatureRaw { get; set; }
+            public string FooterSignatureRaw { get; set; } = "";
         }
 
-        private static HeaderFooterInfo ExtractHeaderFooter(IEnumerable<PageAnalysis> pages)
+        private static HeaderFooterInfo ExtractHeaderFooter(IEnumerable<PageAnalysis>? pages)
         {
             var dtoPages = pages?.Select(PageDto.From).ToList() ?? new List<PageDto>();
             return ExtractHeaderFooterPages(dtoPages);
@@ -652,12 +652,12 @@ namespace FilterPDF.Utils
             public decimal ScanRatio; public bool IsScanned;
             public bool IsEncrypted; public bool PermCopy; public bool PermPrint; public bool PermAnnotate; public bool PermFillForms; public bool PermExtract; public bool PermAssemble; public bool PermPrintHq;
             public bool HasJs; public bool HasEmbedded; public bool HasAttachments; public bool HasMultimedia; public bool HasForms;
-            public string MetaTitle; public string MetaAuthor; public string MetaSubject; public string MetaKeywords; public string MetaCreator; public string MetaProducer;
+            public string MetaTitle = ""; public string MetaAuthor = ""; public string MetaSubject = ""; public string MetaKeywords = ""; public string MetaCreator = ""; public string MetaProducer = "";
             public DateTime? CreatedPdf; public DateTime? ModifiedPdf;
-            public List<string> DocTypes;
+            public List<string> DocTypes = new();
         }
 
-        private static ProcessAggregate AggregateProcess(PDFAnalysisResult analysis)
+        private static ProcessAggregate AggregateProcess(PDFAnalysisResult? analysis)
         {
             var agg = new ProcessAggregate();
             var pages = analysis?.Pages ?? new List<PageAnalysis>();
@@ -684,12 +684,12 @@ namespace FilterPDF.Utils
             agg.HasMultimedia = res?.HasMultimedia ?? false;
             agg.HasForms = (res?.Forms ?? 0) > 0;
             var meta = analysis?.Metadata;
-            agg.MetaTitle = meta?.Title;
-            agg.MetaAuthor = meta?.Author;
-            agg.MetaSubject = meta?.Subject;
-            agg.MetaKeywords = meta?.Keywords;
-            agg.MetaCreator = meta?.Creator;
-            agg.MetaProducer = meta?.Producer;
+            agg.MetaTitle = meta?.Title ?? "";
+            agg.MetaAuthor = meta?.Author ?? "";
+            agg.MetaSubject = meta?.Subject ?? "";
+            agg.MetaKeywords = meta?.Keywords ?? "";
+            agg.MetaCreator = meta?.Creator ?? "";
+            agg.MetaProducer = meta?.Producer ?? "";
             agg.CreatedPdf = meta?.CreationDate;
             agg.ModifiedPdf = meta?.ModificationDate;
             agg.DocTypes = new List<string>();
@@ -753,7 +753,7 @@ namespace FilterPDF.Utils
         private static string GetStr(Dictionary<string, object>? dict, string key)
         {
             if (dict == null || !dict.TryGetValue(key, out var v) || v == null) return "";
-            return v.ToString();
+            return v.ToString() ?? "";
         }
 
         private static Dictionary<string, object>? GetDict(Dictionary<string, object> dict, string key)
@@ -891,20 +891,20 @@ namespace FilterPDF.Utils
 
         private class DocumentRecord
         {
-            public string DocKey { get; set; }
-            public string RawLabel { get; set; }
-            public string Macro { get; set; }
-            public string Subcat { get; set; }
+            public string DocKey { get; set; } = "";
+            public string RawLabel { get; set; } = "";
+            public string Macro { get; set; } = "";
+            public string Subcat { get; set; } = "";
             public int StartPage { get; set; }
             public int EndPage { get; set; }
             public List<PageDto> Pages { get; set; } = new();
             public Dictionary<string, object> Meta { get; set; } = new();
-            public string HeaderOrigin { get; set; }
-            public string HeaderTitle { get; set; }
-            public string HeaderSubtitle { get; set; }
-            public List<string> FooterSigners { get; set; }
+            public string HeaderOrigin { get; set; } = "";
+            public string HeaderTitle { get; set; } = "";
+            public string HeaderSubtitle { get; set; } = "";
+            public List<string> FooterSigners { get; set; } = new();
             public DateTime? FooterSignedAt { get; set; }
-            public string FooterSignatureRaw { get; set; }
+            public string FooterSignatureRaw { get; set; } = "";
             public int TotalPages { get; set; }
             public int TotalWords { get; set; }
             public int TotalChars { get; set; }
@@ -918,12 +918,12 @@ namespace FilterPDF.Utils
         private class PageDto
         {
             public int PageNumber { get; set; }
-            public string Text { get; set; }
-            public string Header { get; set; }
-            public string Footer { get; set; }
+            public string Text { get; set; } = "";
+            public string Header { get; set; } = "";
+            public string Footer { get; set; } = "";
             public bool HasMoney { get; set; }
             public bool HasCpf { get; set; }
-            public string Fonts { get; set; }
+            public string Fonts { get; set; } = "";
             public int WordCount { get; set; }
             public int CharCount { get; set; }
             public bool IsScanned { get; set; }
@@ -946,9 +946,9 @@ namespace FilterPDF.Utils
                 var footer = (p?.TextInfo?.Footers != null && p.TextInfo.Footers.Any())
                     ? string.Join("\n", p.TextInfo.Footers)
                     : BottomLines(text, 5);
-                var fonts = p?.TextInfo?.Fonts != null ? string.Join("|", p.TextInfo.Fonts.Select(f => f.Name)) : "";
-                var fontList = p?.TextInfo?.Fonts != null ? p.TextInfo.Fonts.Select(f => f.Name).ToList() : new List<string>();
-                var wordCount = p?.TextInfo?.WordCount ?? (text.Length == 0 ? 0 : text.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length);
+                var fonts = p?.TextInfo?.Fonts != null ? string.Join("|", p.TextInfo.Fonts.Select(f => f.Name ?? "")) : "";
+                var fontList = p?.TextInfo?.Fonts != null ? p.TextInfo.Fonts.Select(f => f.Name ?? "").ToList() : new List<string>();
+                var wordCount = p?.TextInfo?.WordCount ?? (text.Length == 0 ? 0 : text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length);
                 var charCount = p?.TextInfo?.CharacterCount ?? text.Length;
                 var imgCount = p?.Resources?.Images?.Count ?? 0;
                 var annCount = p?.Annotations?.Count ?? 0;

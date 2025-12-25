@@ -141,9 +141,12 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
                         if (string.IsNullOrWhiteSpace(seg.Text)) continue;
                         if (type == "keyword")
                         {
-                            var idx = seg.Text.IndexOf(pat.Pattern ?? "", StringComparison.OrdinalIgnoreCase);
+                            var pattern = pat.Pattern ?? "";
+                            var idx = seg.Text.IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
                             if (idx < 0) continue;
-                            var rawValue = string.IsNullOrWhiteSpace(pat.Value) ? seg.Text.Substring(idx, Math.Min(pat.Pattern.Length, seg.Text.Length - idx)) : pat.Value!;
+                            var rawValue = string.IsNullOrWhiteSpace(pat.Value)
+                                ? seg.Text.Substring(idx, Math.Min(pattern.Length, seg.Text.Length - idx))
+                                : pat.Value!;
                             var value = NormalizeValue(field, ApplyClean(strategy.Clean, rawValue), ctx);
                             if (!IsValidValue(field, value, strategy.Validate)) continue;
                             var conf = ScoreToConfidence(pat.Weight, priority, sourceWeight, bucketWeight, seg.Weight);
@@ -202,8 +205,9 @@ namespace FilterPDF.TjpbDespachoExtractor.Extraction
             var value = NormalizeValue(field, ApplyClean(strategy.Clean, rawValue), ctx);
             if (!IsValidValue(field, value, strategy.Validate)) return;
             var conf = ScoreToConfidence(pat.Weight, priority, sourceWeight, bucketWeight, seg.Weight);
-            var bbox = ComputeMatchBBox(seg.Text, seg.Words, group.Index, group.Length) ?? seg.BBox;
-            var snippet = TextUtils.SafeSnippet(seg.Text, Math.Max(0, group.Index - 40), Math.Min(seg.Text.Length - Math.Max(0, group.Index - 40), 160));
+            var segText = seg.Text ?? "";
+            var bbox = ComputeMatchBBox(segText, seg.Words, group.Index, group.Length) ?? seg.BBox;
+            var snippet = TextUtils.SafeSnippet(segText, Math.Max(0, group.Index - 40), Math.Min(segText.Length - Math.Max(0, group.Index - 40), 160));
             Upsert(result, field, BuildField(value, conf, $"strategy_regex:{pat.Label}", seg, snippet, bbox));
         }
 

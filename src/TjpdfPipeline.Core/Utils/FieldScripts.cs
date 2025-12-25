@@ -177,7 +177,7 @@ namespace FilterPDF.Utils
                 ["page"] = page,
                 ["method"] = string.Equals(pat.Type, "keyword", StringComparison.OrdinalIgnoreCase) ? "keyword_script" : "regex_script"
             };
-            item["bbox"] = bbox;
+            item["bbox"] = bbox ?? new Dictionary<string, double>();
             results.Add(item);
         }
 

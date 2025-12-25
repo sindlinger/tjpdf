@@ -103,9 +103,9 @@ namespace FilterPDF
                 
                 // Espaço de cor
                 var colorSpace = stream.Get(PdfName.ColorSpace);
-                if (colorSpace != null) 
+                if (colorSpace != null)
                 {
-                    image.ColorSpace = colorSpace.ToString();
+                    image.ColorSpace = colorSpace.ToString() ?? "";
                 }
                 
                 // Tipo de compressão/filtro
@@ -114,15 +114,15 @@ namespace FilterPDF
                 {
                     if (filter is PdfArray filterArray && filterArray.Size() > 0)
                     {
-                        image.CompressionType = filterArray.GetAsName(0).ToString();
+                        image.CompressionType = filterArray.GetAsName(0)?.ToString() ?? "";
                     }
                     else if (filter is PdfName filterName)
                     {
-                        image.CompressionType = filterName.ToString();
+                        image.CompressionType = filterName.ToString() ?? "";
                     }
                     else
                     {
-                        image.CompressionType = filter.ToString();
+                        image.CompressionType = filter.ToString() ?? "";
                     }
                 }
                 
@@ -167,7 +167,7 @@ namespace FilterPDF
         {
             if (filter == null) return false;
             
-            var filterStr = filter.ToString();
+            var filterStr = filter.ToString() ?? "";
             return filterStr.Contains("DCTDecode") || filterStr.Contains("JPXDecode");
         }
     }

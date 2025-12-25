@@ -16,7 +16,7 @@ Havia um repositório antigo mais completo (**/mnt/b/dev/sei-dashboard/fpdf-port
 
 ### 1) Bookmarks / Segmentação
 - Implementado comando de bookmarks (CLI) e estrutura `BookmarksFlat`.
-- Corrigido o cálculo de página do bookmark usando **NameTree + DestinationPage**, com fallback para raw outlines e named dests.
+- Corrigido o cálculo de página do bookmark usando **NameTree + DestinationPage** (somente Outlines API; sem fallback para raw outlines/named dests).
 - Criado comando auxiliar para debug:
   - `fetch-bookmark-titles`
 

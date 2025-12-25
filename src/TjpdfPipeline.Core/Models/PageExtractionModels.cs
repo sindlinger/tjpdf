@@ -75,7 +75,7 @@ namespace FilterPDF.Models
         public PageExtractionOptions Configuration { get; set; } = new PageExtractionOptions();
         
         /// <summary>Output directory information</summary>
-        public DirectoryInfo OutputDirectory { get; set; }
+        public DirectoryInfo OutputDirectory { get; set; } = new DirectoryInfo(".");
         
         /// <summary>Total file size of all extracted content</summary>
         public long TotalOutputSizeBytes => ExtractedPages.Sum(p => p.FileSizeBytes);

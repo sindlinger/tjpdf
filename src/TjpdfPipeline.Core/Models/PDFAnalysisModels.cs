@@ -129,6 +129,7 @@ namespace FilterPDF
         public List<FontInfo> Fonts { get; set; } = new List<FontInfo>();
         public List<LineInfo> Lines { get; set; } = new List<LineInfo>();
         public List<WordInfo> Words { get; set; } = new List<WordInfo>();
+        public List<CharacterInfo> Characters { get; set; } = new List<CharacterInfo>();
         public List<string> Languages { get; set; } = new List<string>();
         public bool HasTables { get; set; }
         public bool HasColumns { get; set; }
@@ -734,6 +735,37 @@ namespace FilterPDF
         public float Y0 { get; set; }
         public float X1 { get; set; }
         public float Y1 { get; set; }
+        public float NormX0 { get; set; }
+        public float NormY0 { get; set; }
+        public float NormX1 { get; set; }
+        public float NormY1 { get; set; }
+    }
+
+    /// <summary>
+    /// Caractere (glifo) com fonte/estilo e bounding box.
+    /// </summary>
+    public class CharacterInfo
+    {
+        public int Index { get; set; }
+        public string Text { get; set; } = string.Empty;
+        public string Font { get; set; } = string.Empty;
+        public float Size { get; set; }
+        public bool Bold { get; set; }
+        public bool Italic { get; set; }
+        public bool Underline { get; set; }
+        public int RenderMode { get; set; }
+        public float CharSpacing { get; set; }
+        public float WordSpacing { get; set; }
+        public float HorizontalScaling { get; set; }
+        public float Rise { get; set; }
+        public float X0 { get; set; }
+        public float Y0 { get; set; }
+        public float X1 { get; set; }
+        public float Y1 { get; set; }
+        public float BaseX0 { get; set; }
+        public float BaseY0 { get; set; }
+        public float BaseX1 { get; set; }
+        public float BaseY1 { get; set; }
         public float NormX0 { get; set; }
         public float NormY0 { get; set; }
         public float NormX1 { get; set; }

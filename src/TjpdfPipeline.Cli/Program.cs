@@ -14,6 +14,7 @@ namespace TjpdfPipeline.Cli
                 return 1;
             }
 
+            args = FilterPDF.Utils.PathUtils.NormalizeArgs(args);
             var cmdName = args[0];
             var cmdArgs = args.Skip(1).ToArray();
 
@@ -44,6 +45,19 @@ namespace TjpdfPipeline.Cli
             if (cmdName.Equals("pdf-streams", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = new PdfStreamsCommand();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
+            if (cmdName.Equals("pdf-text", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new PdfTextCommand();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
+            if (cmdName.Equals("text", StringComparison.OrdinalIgnoreCase) ||
+                cmdName.Equals("txt", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new PdfTextCommand();
                 cmd.Execute(cmdArgs);
                 return 0;
             }
@@ -83,6 +97,18 @@ namespace TjpdfPipeline.Cli
                 cmd.Execute(cmdArgs);
                 return 0;
             }
+            if (cmdName.Equals("run", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new TjpdfRunCommand();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
+            if (cmdName.Equals("tjpb-s5", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = new TjpbStage5Command();
+                cmd.Execute(cmdArgs);
+                return 0;
+            }
             if (cmdName.Equals("tjpb-s7", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = new TjpbStage7Command();
@@ -116,12 +142,16 @@ namespace TjpdfPipeline.Cli
             Console.WriteLine("tjpdf-cli pdf-info bookmark-tree --input file.pdf");
             Console.WriteLine("tjpdf-cli pdf-streams list --input file.pdf [--limit N]");
             Console.WriteLine("tjpdf-cli pdf-streams show --input file.pdf --id N");
+            Console.WriteLine("tjpdf-cli pdf-text --input file.pdf [--page N] [--all] [--raw] [--no-clean] [--layout] [--grid-step N] [--char-line N] [--chars] [--out file.txt]");
+            Console.WriteLine("tjpdf-cli text <file.pdf> [page]");
             Console.WriteLine("tjpdf-cli show-moddate --input file.pdf");
             Console.WriteLine("tjpdf-cli footer --input file.pdf [--page N] [--all] [--tail-lines N] [--json]");
             Console.WriteLine("tjpdf-cli preprocess-inputs --input-dir <dir> [--out-dir <dir>] [--max N] [--per-process-dir] [--flat]");
             Console.WriteLine("tjpdf-cli tjpb-s1 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-json]");
             Console.WriteLine("tjpdf-cli tjpb-s3 [--input-dir <dir>] [--input-manifest <file>] [--out-dir <dir>] [--max N] [--print-summary]");
-            Console.WriteLine("tjpdf-cli tjpb-s7 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-summary]");
+            Console.WriteLine("tjpdf-cli run <input-dir> [--out <arquivo>] [--limit N] [-d|-c|-r]");
+            Console.WriteLine("tjpdf-cli tjpb-s5 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-summary] [--export-doc-dtos <dir>] [-d|-c|-r]");
+            Console.WriteLine("tjpdf-cli tjpb-s7 --input-dir <dir> [--out-dir <dir>] [--max N] [--print-summary] [--export-doc-dtos <dir>] [-d|-c|-r]");
             Console.WriteLine("tjpdf-cli fetch-bookmark-titles --input-file <pdf> [--json] [--tree]");
             Console.WriteLine("tjpdf-cli bookmark-paragraphs --input-file <pdf> [--bookmark <texto>] [--all] [--first] [--last] [--json]");
             Console.WriteLine("tjpdf-cli pdf-unicode list --input file.pdf");

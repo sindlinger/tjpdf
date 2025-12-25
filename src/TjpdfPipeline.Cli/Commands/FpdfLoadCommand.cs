@@ -408,7 +408,7 @@ namespace FilterPDF.Commands
                     
                     // Get the actual directory from the first failed file
                     var firstFailedFile = securityFailures.First().file;
-                    var actualDirectory = Path.GetDirectoryName(firstFailedFile);
+                    var actualDirectory = Path.GetDirectoryName(firstFailedFile) ?? "(unknown)";
                     
                     Console.WriteLine(LanguageManager.GetMessage("security_config_json"));
                     Console.WriteLine(LanguageManager.GetMessage("security_config_content", actualDirectory));

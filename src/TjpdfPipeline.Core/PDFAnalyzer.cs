@@ -230,7 +230,7 @@ namespace FilterPDF
 
                     if (pageWidth > 0 && pageHeight > 0)
                     {
-                        foreach (var w in textInfo.Words)
+                        foreach (var w in textInfo.Words ?? new List<WordInfo>())
                         {
                             w.NormX0 = w.X0 / pageWidth;
                             w.NormX1 = w.X1 / pageWidth;
@@ -239,7 +239,7 @@ namespace FilterPDF
                         }
                     }
 
-                    var tabulated = BuildPageTextTabulated(textInfo.Words);
+                    var tabulated = BuildPageTextTabulated(textInfo.Words ?? new List<WordInfo>());
                     if (!string.IsNullOrWhiteSpace(tabulated))
                     {
                         textInfo.PageTextRaw = tabulated;
@@ -249,6 +249,28 @@ namespace FilterPDF
                         textInfo.LineCount = tabulated.Split('\n').Length;
                         textInfo.AverageLineLength = CalculateAverageLineLength(tabulated);
                         textInfo.Languages = DetectLanguages(tabulated);
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (doc != null)
+                {
+                    var charCollector = new IText7CharCollector();
+                    var processor = new PdfCanvasProcessor(charCollector);
+                    processor.ProcessPageContent(doc.GetPage(pageNum));
+                    textInfo.Characters = charCollector.GetCharacters();
+                    if (pageWidth > 0 && pageHeight > 0)
+                    {
+                        foreach (var c in textInfo.Characters ?? new List<CharacterInfo>())
+                        {
+                            c.NormX0 = c.X0 / pageWidth;
+                            c.NormX1 = c.X1 / pageWidth;
+                            c.NormY0 = c.Y0 / pageHeight;
+                            c.NormY1 = c.Y1 / pageHeight;
+                        }
                     }
                 }
             }
@@ -327,7 +349,7 @@ namespace FilterPDF
                 }
 
                 var lineText = new System.Text.StringBuilder();
-                WordInfo prev = null;
+                WordInfo? prev = null;
                 foreach (var w in ordered)
                 {
                     if (prev != null)
@@ -866,7 +888,7 @@ namespace FilterPDF
                     foreach (var widget in widgets)
                     {
                         var page = widget.GetPage();
-                        var page1 = page != null ? doc.GetPageNumber(page) : 0;
+                        var page1 = page != null && doc != null ? doc.GetPageNumber(page) : 0;
                         var rect = widget.GetRectangle()?.ToRectangle();
                         var bbox = NormalizeRect(rect, page?.GetPageSize());
 
@@ -947,7 +969,7 @@ namespace FilterPDF
                             profiles.Add(new ColorProfile
                             {
                                 Name = key.ToString(),
-                                ColorSpace = colorSpaces.Get(key).ToString()
+                                ColorSpace = colorSpaces.Get(key)?.ToString() ?? ""
                             });
                         }
                     }
@@ -993,7 +1015,7 @@ namespace FilterPDF
             var b = new BookmarkStructure();
             try
             {
-                var items = BookmarkExtractor.Extract(doc);
+                var items = doc != null ? BookmarkExtractor.Extract(doc) : new List<BookmarkItem>();
                 if (items != null && items.Count > 0)
                 {
                     b.RootItems = items;
@@ -1082,7 +1104,7 @@ namespace FilterPDF
                 string title = "";
                 var titleObj = current.Get(PdfName.Title);
                 if (titleObj is PdfString ps) title = ps.ToUnicodeString();
-                else if (titleObj != null) title = titleObj.ToString();
+                else if (titleObj != null) title = titleObj.ToString() ?? "";
 
                 var destObj = current.Get(PdfName.Dest);
                 if (destObj == null)

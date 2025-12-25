@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using iText.Kernel.Pdf;
 
 namespace FilterPDF.Utils
@@ -34,7 +35,7 @@ namespace FilterPDF.Utils
                 }
 
                 // Abrir leitor e documento novos
-                var reader = new PdfReader(fullPath);
+                var reader = CreateReaderWithRecovery(fullPath);
                 var doc = new PdfDocument(reader);
                 _openReaders[fullPath] = reader;
                 _openDocs[fullPath] = doc;
@@ -50,7 +51,88 @@ namespace FilterPDF.Utils
             if (string.IsNullOrEmpty(pdfPath))
                 throw new ArgumentNullException(nameof(pdfPath));
 
-            return new PdfDocument(new PdfReader(pdfPath));
+            var reader = CreateReaderWithRecovery(pdfPath);
+            return new PdfDocument(reader);
+        }
+
+        private static PdfReader CreateReaderWithRecovery(string pdfPath)
+        {
+            try
+            {
+                var props = BuildReaderProperties();
+                return new PdfReader(pdfPath, props);
+            }
+            catch
+            {
+                var reader = new PdfReader(pdfPath);
+                reader.SetUnethicalReading(true);
+                return reader;
+            }
+        }
+
+        private static ReaderProperties BuildReaderProperties()
+        {
+            var props = new ReaderProperties();
+            TrySetBool(props, "SetUnethicalReading", true);
+            TrySetBool(props, "SetRecoverMode", true);
+            TrySetBool(props, "SetRecoveryMode", true);
+            TrySetBool(props, "SetRepairMode", true);
+            TrySetStrictnessLevel(props);
+            return props;
+        }
+
+        private static void TrySetBool(object target, string methodName, bool value)
+        {
+            try
+            {
+                var method = target.GetType().GetMethod(methodName, new[] { typeof(bool) });
+                method?.Invoke(target, new object[] { value });
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static void TrySetStrictnessLevel(object target)
+        {
+            try
+            {
+                var method = target.GetType().GetMethod("SetStrictnessLevel");
+                if (method == null)
+                    return;
+                var parameters = method.GetParameters();
+                if (parameters.Length != 1)
+                    return;
+                var paramType = parameters[0].ParameterType;
+                object? value = null;
+                if (paramType.IsEnum)
+                {
+                    var names = Enum.GetNames(paramType);
+                    var pick = names.FirstOrDefault(n => n.Contains("LENIENT", StringComparison.OrdinalIgnoreCase) ||
+                                                         n.Contains("LAX", StringComparison.OrdinalIgnoreCase) ||
+                                                         n.Contains("RELAX", StringComparison.OrdinalIgnoreCase))
+                               ?? names.FirstOrDefault(n => n.Contains("DEFAULT", StringComparison.OrdinalIgnoreCase))
+                               ?? names.FirstOrDefault();
+                    if (!string.IsNullOrWhiteSpace(pick))
+                        value = Enum.Parse(paramType, pick);
+                }
+                else if (paramType == typeof(int))
+                {
+                    value = 0;
+                }
+                else if (paramType == typeof(string))
+                {
+                    value = "LENIENT";
+                }
+
+                if (value != null)
+                    method.Invoke(target, new[] { value });
+            }
+            catch
+            {
+                // ignore
+            }
         }
 
         /// <summary>

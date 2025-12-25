@@ -58,6 +58,8 @@ namespace FilterPDF.Commands
         private string _laudoHashDbPath = "";
         private Dictionary<string, string>? _laudosEspecieByEspecialidade;
         private string _laudosEspeciePath = "";
+        private readonly Dictionary<string, Dictionary<string, Dictionary<string, object>>> _docTypeSeedsByProcess
+            = new(StringComparer.OrdinalIgnoreCase);
         private ExtractionPlan? _anchorHeadPlan;
         private ExtractionPlan? _anchorTailPlan;
         private string _anchorHeadTemplatePath = "";
@@ -69,14 +71,17 @@ namespace FilterPDF.Commands
             bool splitAnexos = false; // backward compat (anexos now covered by bookmark docs)
             int maxBookmarkPages = 30; // agora interno, sem flag na CLI
             bool onlyDespachos = false;
+            bool filterDespacho = false;
+            bool filterRequerimento = false;
+            bool filterCertidao = false;
             string? signerContains = null;
             bool debugDocSummary = false;
             bool debugSigner = false;
-            bool fieldsOnly = false;
             bool printJson = false;
             string? stage = null;
             string stageOutDir = Path.Combine(Directory.GetCurrentDirectory(), "stage7_out");
             bool stagePrintSummary = false;
+            string? exportDocDtosDir = null;
             int limit = 0;
             string? exportCsvPath = null;
             string pgUri = FilterPDF.Utils.PgDocStore.DefaultPgUri;
@@ -123,15 +128,19 @@ namespace FilterPDF.Commands
                 if (args[i] == "--input-dir" && i + 1 < args.Length) inputDir = args[i + 1];
                 if (args[i] == "--split-anexos") splitAnexos = true;
                 if (args[i] == "--only-despachos") onlyDespachos = true;
+                if (args[i] == "--despacho" || args[i] == "-d") filterDespacho = true;
+                if (args[i] == "--requerimento" || args[i] == "-r") filterRequerimento = true;
+                if (args[i] == "--certidao" || args[i] == "-c") filterCertidao = true;
                 if (args[i] == "--signer-contains" && i + 1 < args.Length) signerContains = args[i + 1];
                 if (args[i] == "--config" && i + 1 < args.Length) configPath = args[i + 1];
                 if (args[i] == "--debug-docsummary") debugDocSummary = true;
                 if (args[i] == "--debug-signer") debugSigner = true;
-                if (args[i] == "--fields-only") fieldsOnly = true;
                 if (args[i] == "--print-json") printJson = true;
                 if (args[i] == "--stage" && i + 1 < args.Length) stage = args[i + 1];
                 if (args[i] == "--out-dir" && i + 1 < args.Length) stageOutDir = args[i + 1];
                 if (args[i] == "--print-summary") stagePrintSummary = true;
+                if (args[i] == "--export-doc-dtos" && i + 1 < args.Length) exportDocDtosDir = args[i + 1];
+                if (args[i] == "--no-pg") pgUri = "";
                 if (args[i] == "--limit" && i + 1 < args.Length)
                 {
                     if (int.TryParse(args[i + 1], out var lim) && lim > 0)
@@ -150,6 +159,9 @@ namespace FilterPDF.Commands
                     }
                 }
             }
+
+            var disablePgEnv = Environment.GetEnvironmentVariable("TJPB_NO_PG");
+            bool usePg = !string.IsNullOrWhiteSpace(pgUri) && string.IsNullOrWhiteSpace(disablePgEnv);
 
             try
             {
@@ -206,19 +218,36 @@ namespace FilterPDF.Commands
             try
             {
                 // Detecta se estamos lendo de cache (json) ou de PDFs
-                var jsonCaches = dir.GetFiles("*.json").OrderBy(f => f.Name).ToList();
+                var jsonCaches = dir.GetFiles("*.json")
+                                   .Where(f => !IsMetaCacheJson(f.Name))
+                                   .OrderBy(f => f.Name)
+                                   .ToList();
                 var pdfs = dir.GetFiles("*.pdf").OrderBy(f => f.Name).ToList();
+                if (pdfs.Count == 0)
+                {
+                    pdfs = dir.GetFiles("*.pdf", SearchOption.AllDirectories)
+                              .OrderBy(f => f.Name)
+                              .ToList();
+                }
+                if (jsonCaches.Count == 0 && pdfs.Count == 0)
+                {
+                    jsonCaches = dir.GetFiles("*.json", SearchOption.AllDirectories)
+                                   .Where(f => !IsMetaCacheJson(f.Name))
+                                   .OrderBy(f => f.Name)
+                                   .ToList();
+                }
                 bool useCache = jsonCaches.Count > 0 && pdfs.Count == 0;
 
                 var allDocs = new List<Dictionary<string, object>>();
                 var allDocsWords = new List<List<Dictionary<string, object>>>();
 
                 var sources = (useCache ? jsonCaches.Cast<FileInfo>() : pdfs.Cast<FileInfo>()).ToList();
-                if (limit > 0)
-                    sources = sources.Take(limit).ToList();
+                int processed = 0;
 
                 foreach (var file in sources)
                 {
+                    if (limit > 0 && processed >= limit)
+                        break;
                     try
                     {
                     PDFAnalysisResult analysis;
@@ -233,13 +262,19 @@ namespace FilterPDF.Commands
                     }
                     else
                     {
+                        if (!LooksLikePdf(file.FullName))
+                        {
+                            Console.Error.WriteLine($"[pipeline-tjpb] WARN {file.Name}: arquivo não é PDF (header inválido).");
+                            continue;
+                        }
                         analysis = new PDFAnalyzer(file.FullName).AnalyzeFull();
                         pdfPath = file.FullName;
                     }
 
                     var procName = DeriveProcessName(pdfPath);
                     analysesByProcess[procName] = analysis;
-                    if (!useCache)
+                    EnsureDocTypeSeeds(procName, pdfPath, analysis);
+                    if (!useCache && usePg)
                     {
                         try
                         {
@@ -331,6 +366,7 @@ namespace FilterPDF.Commands
                             allDocs.AddRange(anexosChildren);
                         }
                     }
+                    processed++;
                 }
                 catch (Exception ex)
                 {
@@ -338,9 +374,16 @@ namespace FilterPDF.Commands
                 }
             }
 
-                if (string.Equals(stage, "s7", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(stage, "s5", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(stage, "s7", StringComparison.OrdinalIgnoreCase))
                 {
-                    WriteStage7Output(allDocs, stageOutDir, stagePrintSummary);
+                    if (string.Equals(stage, "s5", StringComparison.OrdinalIgnoreCase))
+                        WriteStage5Output(allDocs, stageOutDir, stagePrintSummary);
+                    else
+                        WriteStage7Output(allDocs, stageOutDir, stagePrintSummary);
+
+                    if (!string.IsNullOrWhiteSpace(exportDocDtosDir))
+                        WriteDocTypeDtos(allDocs, exportDocDtosDir);
                     return;
                 }
 
@@ -357,6 +400,16 @@ namespace FilterPDF.Commands
                     string signer = doc.TryGetValue("signer", out var s) ? s?.ToString() ?? "" : "";
 
                     bool pass = true;
+                    bool typeFilterAny = filterDespacho || filterRequerimento || filterCertidao;
+                    if (typeFilterAny)
+                    {
+                        bool isDespacho = GetBool(doc, "is_despacho_valid");
+                        bool isCertidao = GetBool(doc, "is_certidao_valid");
+                        bool isRequerimento = GetBool(doc, "is_requerimento_pagamento_honorarios");
+                        pass &= (filterDespacho && isDespacho) ||
+                                (filterCertidao && isCertidao) ||
+                                (filterRequerimento && isRequerimento);
+                    }
                     if (onlyDespachos)
                         pass &= label.Contains("despacho", StringComparison.OrdinalIgnoreCase) ||
                                 docType.Contains("despacho", StringComparison.OrdinalIgnoreCase);
@@ -379,16 +432,8 @@ namespace FilterPDF.Commands
                 if (!string.IsNullOrWhiteSpace(exportCsvPath))
                     WriteCsvExport(exportCsvPath, grouped);
 
-                if (fieldsOnly)
-                {
-                    var targetDocs = filteredDocs.Count > 0 ? filteredDocs : allDocs;
-                    var payload = new
-                    {
-                        documents = targetDocs.Select(BuildFieldsOnlyDoc).ToList()
-                    };
-                    Console.WriteLine(JsonConvert.SerializeObject(payload, Formatting.Indented));
-                    return;
-                }
+                if (!string.IsNullOrWhiteSpace(exportDocDtosDir))
+                    WriteDocTypeDtos(allDocs, exportDocDtosDir);
 
                 if (printJson)
                 {
@@ -407,7 +452,8 @@ namespace FilterPDF.Commands
                             ["sha256"] = "",
                             ["fileSize"] = 0L
                         };
-                        var payload = new { process = procName, pdf = pdfMeta, documents = grp.Documents, paragraph_stats = paragraphStats };
+                        var processFields = BuildProcessRow(procName, grp.Documents);
+                        var payload = new { process = procName, pdf = pdfMeta, process_fields = processFields, documents = grp.Documents, paragraph_stats = paragraphStats };
                         outputs.Add(payload);
                     }
                     if (outputs.Count == 1)
@@ -417,12 +463,17 @@ namespace FilterPDF.Commands
                     return;
                 }
 
+                if (!string.IsNullOrWhiteSpace(exportDocDtosDir))
+                    WriteDocTypeDtos(allDocs, exportDocDtosDir);
+
                 // Persistir por processo no Postgres (tabelas processes + documents)
                 foreach (var grp in grouped)
                 {
-                    var procName = grp.Process;
+                    var procName = grp.Process ?? "";
                     var firstDoc = grp.Documents.FirstOrDefault();
-                    var sourcePath = firstDoc != null && firstDoc.TryGetValue("pdf_path", out var pp) ? pp?.ToString() ?? procName : procName;
+                    string sourcePath = firstDoc != null && firstDoc.TryGetValue("pdf_path", out var pp)
+                        ? (pp?.ToString() ?? procName)
+                        : procName;
                     var analysis = analysesByProcess.TryGetValue(procName, out var an) ? an : new PDFAnalysisResult();
                     var pdfMeta = pdfMetaByProcess.TryGetValue(procName, out var meta) ? meta : new Dictionary<string, object>
                     {
@@ -432,26 +483,30 @@ namespace FilterPDF.Commands
                         ["sha256"] = "",
                         ["fileSize"] = 0L
                     };
-                    var payload = new { process = procName, pdf = pdfMeta, documents = grp.Documents, paragraph_stats = paragraphStats };
+                    var processFields = BuildProcessRow(procName, grp.Documents);
+                    var payload = new { process = procName, pdf = pdfMeta, process_fields = processFields, documents = grp.Documents, paragraph_stats = paragraphStats };
                     var tokenProc = JToken.FromObject(payload);
                     foreach (var v in tokenProc.SelectTokens("$..*").OfType<JValue>())
                     {
                         if (v.Type == JTokenType.String && v.Value != null)
                         {
-                            var s = v.Value.ToString();
+                            var s = v.Value?.ToString() ?? "";
                             s = Regex.Replace(s, @"\p{C}+", " ");
                             v.Value = s;
                         }
                     }
                     var jsonProc = tokenProc.ToString(Formatting.None);
-                    try
+                    if (usePg)
                     {
-                        PgDocStore.UpsertProcess(pgUri, sourcePath, analysis, new BookmarkClassifier(),
-                                                 storeJson: true, storeDocuments: false, jsonPayload: jsonProc);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.Error.WriteLine($"[pipeline-tjpb] WARN PG save {procName}: {ex.Message}");
+                        try
+                        {
+                            PgDocStore.UpsertProcess(pgUri, sourcePath ?? "", analysis, new BookmarkClassifier(),
+                                                     storeJson: true, storeDocuments: false, jsonPayload: jsonProc);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"[pipeline-tjpb] WARN PG save {procName}: {ex.Message}");
+                        }
                     }
                 }
             }
@@ -472,14 +527,18 @@ namespace FilterPDF.Commands
             Console.WriteLine("Se houver .zip no input-dir, mergeia PDFs internos e cria bookmarks por nome de arquivo.");
             Console.WriteLine("--split-anexos: cria subdocumentos a partir de bookmarks 'Anexo/Anexos' dentro de cada documento.");
             Console.WriteLine("--only-despachos: filtra apenas documentos cujo doc_label/doc_type contenha 'Despacho'.");
+            Console.WriteLine("--despacho|-d: filtra somente documentos com is_despacho_valid == true.");
+            Console.WriteLine("--certidao|-c: filtra somente documentos com is_certidao_valid == true.");
+            Console.WriteLine("--requerimento|-r: filtra somente documentos com is_requerimento_pagamento_honorarios == true.");
             Console.WriteLine("--signer-contains: filtra documentos cujo signer contenha o texto informado (case-insensitive).");
             Console.WriteLine("--debug-docsummary: imprime header/footer + campos de cabeçalho/assinatura por documento e não grava no Postgres.");
             Console.WriteLine("--debug-signer: adiciona signer_candidates (sei/footer/digital/lastline/fulltext) no JSON.");
-            Console.WriteLine("--fields-only: imprime apenas os fields principais (JSON) e não grava no Postgres.");
             Console.WriteLine("--print-json: imprime o JSON completo (por processo) e não grava no Postgres.");
             Console.WriteLine("--export-csv [caminho]: gera CSV consolidado por processo (default: ./tjpb_export.csv).");
+            Console.WriteLine("--stage s5 --out-dir <dir>: gera JSON por processo até o S5 (BuildDocObject) e não segue para CSV/PG.");
             Console.WriteLine("--stage s7 --out-dir <dir>: gera JSON por processo até o S7 (BuildDocObject) e não segue para CSV/PG.");
-            Console.WriteLine("--print-summary: imprime o manifest do stage (quando --stage s7 estiver ativo).");
+            Console.WriteLine("--export-doc-dtos <dir>: grava 3 DTOs por processo (despacho/certidao_cm/requerimento).");
+            Console.WriteLine("--print-summary: imprime o manifest do stage (quando --stage s5/s7 estiver ativo).");
             Console.WriteLine("--limit <n>: processa no máximo <n> PDFs/JSONs da pasta de entrada.");
         }
 
@@ -799,6 +858,108 @@ namespace FilterPDF.Commands
             return name;
         }
 
+        private bool IsMetaCacheJson(string fileName)
+        {
+            var name = Path.GetFileName(fileName)?.Trim().ToLowerInvariant() ?? "";
+            if (name == "index.json" || name == "nodes.json") return true;
+            if (name.EndsWith("_outputs.json", StringComparison.OrdinalIgnoreCase)) return true;
+            if (name.StartsWith("stage", StringComparison.OrdinalIgnoreCase) && name.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) return true;
+            if (name == "tjpdf_output.json") return true;
+            return false;
+        }
+
+        private bool LooksLikePdf(string path)
+        {
+            try
+            {
+                using var fs = File.OpenRead(path);
+                if (fs.Length < 5) return false;
+                Span<byte> buf = stackalloc byte[5];
+                var read = fs.Read(buf);
+                if (read < 5) return false;
+                return buf[0] == (byte)'%' && buf[1] == (byte)'P' && buf[2] == (byte)'D' && buf[3] == (byte)'F' && buf[4] == (byte)'-';
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void EnsureDocTypeSeeds(string process, string pdfPath, PDFAnalysisResult? analysis)
+        {
+            if (string.IsNullOrWhiteSpace(process))
+                return;
+
+            if (!_docTypeSeedsByProcess.TryGetValue(process, out var map))
+            {
+                map = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
+                _docTypeSeedsByProcess[process] = map;
+            }
+
+            EnsureDocSeed(map, process, pdfPath, analysis, "despacho", "Despacho");
+            EnsureDocSeed(map, process, pdfPath, analysis, "certidao_cm", "Certidao CM");
+            EnsureDocSeed(map, process, pdfPath, analysis, "requerimento_pagamento_honorarios", "Requerimento de Pagamento de Honorarios");
+        }
+
+        private void EnsureDocSeed(Dictionary<string, Dictionary<string, object>> map, string process, string pdfPath, PDFAnalysisResult? analysis, string docTypeKey, string label)
+        {
+            if (map.ContainsKey(docTypeKey))
+                return;
+
+            var seed = CreateDocSeed(process, pdfPath, analysis, docTypeKey, label);
+            map[docTypeKey] = seed;
+        }
+
+        private Dictionary<string, object> CreateDocSeed(string process, string pdfPath, PDFAnalysisResult? analysis, string docTypeKey, string label)
+        {
+            var totalPages = analysis?.DocumentInfo?.TotalPages ?? 0;
+            var seed = new Dictionary<string, object>
+            {
+                ["process"] = process ?? "",
+                ["pdf_path"] = pdfPath ?? "",
+                ["doc_label"] = label ?? "",
+                ["doc_label_original"] = label ?? "",
+                ["doc_type"] = docTypeKey ?? "",
+                ["start_page"] = 0,
+                ["end_page"] = 0,
+                ["doc_pages"] = 0,
+                ["total_pages"] = totalPages,
+                ["word_count"] = 0L,
+                ["char_count"] = 0L,
+                ["percentual_blank"] = 0.0
+            };
+            EnsureDocPayloadDefaults(seed);
+            return seed;
+        }
+
+        private Dictionary<string, object> GetDocSeed(string process, string docTypeKey)
+        {
+            if (!_docTypeSeedsByProcess.TryGetValue(process, out var map))
+            {
+                map = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
+                _docTypeSeedsByProcess[process] = map;
+            }
+
+            if (!map.TryGetValue(docTypeKey, out var seed))
+            {
+                seed = CreateDocSeed(process, "", null, docTypeKey, docTypeKey);
+                map[docTypeKey] = seed;
+            }
+
+            return seed;
+        }
+
+        private void MergeDocIntoSeed(Dictionary<string, object> seed, Dictionary<string, object> doc)
+        {
+            if (seed == null || doc == null) return;
+            foreach (var kv in doc)
+            {
+                if (kv.Value == null) continue;
+                seed[kv.Key] = kv.Value;
+            }
+            EnsureDocPayloadDefaults(seed);
+        }
+
         private Dictionary<string, object> BuildDocObject(DocumentBoundary d, PDFAnalysisResult analysis, string pdfPath, List<FieldScript> scripts, ExtractionResult? despachoResult, bool debug = false, bool debugSigner = false, DespachoAnchorState? anchorState = null)
         {
             var docText = string.Join("\n", Enumerable.Range(d.StartPage, d.PageCount)
@@ -1066,6 +1227,19 @@ namespace FilterPDF.Commands
             var isDespachoValid = isDespachoCandidate && d.PageCount >= minPages && MatchesOrigin(docMeta, "despacho") && MatchesSigner(docMeta);
             var isCertidaoValid = isCertidaoCandidate && MatchesOrigin(docMeta, "certidao") && MatchesSigner(docMeta);
             var isDespachoShort = isDespachoCandidate && d.PageCount < 2;
+            var paragraphs = BuildParagraphsFromWords(wordsWithCoords);
+            var bookmarkSlices = BuildBookmarkParagraphSlices(header, subHeader, footer, paragraphs, d.StartPage, d.EndPage);
+            docMeta["bookmark_first_paragraph"] = bookmarkSlices.First;
+            docMeta["bookmark_last_paragraph"] = bookmarkSlices.Last;
+            if (isDespachoValid)
+            {
+                ApplyDespachoHeadTailText(docMeta, header, subHeader, footer, footerSignatureRaw, paragraphs, d.StartPage, d.EndPage);
+            }
+            else
+            {
+                docMeta["doc_head"] = "";
+                docMeta["doc_tail"] = "";
+            }
             var shouldApplyAnchor = isDespachoValid && isDespachoTarget && (anchorState?.Applied != true);
             if (shouldApplyAnchor)
             {
@@ -1081,13 +1255,13 @@ namespace FilterPDF.Commands
             var requerimentoFields = isRequerimentoDoc
                 ? ExtractRequerimentoFields(docText, wordsWithCoords, d.StartPage, d.EndPage)
                 : new List<Dictionary<string, object>>();
-            if (attachDespacho)
+            if (attachDespacho && despachoMatch != null)
             {
                 var despachoFields = ConvertDespachoFields(despachoMatch, "despacho_extractor");
                 if (despachoFields.Count > 0)
                     extractedFields.AddRange(despachoFields);
             }
-            if (attachCertidao)
+            if (attachCertidao && certidaoMatch != null)
             {
                 var certidaoFields = ConvertDespachoFields(certidaoMatch, "certidao_extractor");
                 if (certidaoFields.Count > 0)
@@ -1107,7 +1281,6 @@ namespace FilterPDF.Commands
             if (isRequerimentoDoc)
                 extractedFields = FilterRequerimentoFields(extractedFields);
             AddDocMetaFallbacks(extractedFields, docMeta, d.StartPage, wordsWithCoords);
-            var paragraphs = BuildParagraphsFromWords(wordsWithCoords);
             RefineFieldsWithParagraphs(extractedFields, paragraphs, docMeta);
             var normalizedFields = NormalizeAndValidateFields(extractedFields);
             var missingFields = EnsureRequiredFields(normalizedFields, isDespachoValid, isCertidaoValid, isRequerimentoDoc);
@@ -1181,8 +1354,8 @@ namespace FilterPDF.Commands
                 ["fields"] = normalizedFields,
                 ["fields_missing"] = missingFields,
                 ["band_fields"] = bandFields,
-                ["despacho_extraction"] = attachDespacho ? despachoMatch : null,
-                ["certidao_extraction"] = attachCertidao ? certidaoMatch : null,
+                ["despacho_extraction"] = attachDespacho ? (despachoMatch ?? (object)JValue.CreateNull()) : JValue.CreateNull(),
+                ["certidao_extraction"] = attachCertidao ? (certidaoMatch ?? (object)JValue.CreateNull()) : JValue.CreateNull(),
                 ["forensics"] = forensics
             };
             foreach (var kv in docMeta)
@@ -1302,10 +1475,12 @@ namespace FilterPDF.Commands
             {
                 var procName = grp.Key ?? "sem_processo";
                 var outPath = Path.Combine(outDir, $"{procName}.json");
+                var processFields = BuildProcessRow(procName, grp.ToList());
                 var payload = new
                 {
                     stage = "S7",
                     process = procName,
+                    process_fields = processFields,
                     documents = grp.ToList()
                 };
                 File.WriteAllText(outPath, JsonConvert.SerializeObject(payload, Formatting.Indented));
@@ -1330,6 +1505,96 @@ namespace FilterPDF.Commands
             Console.WriteLine($"[pipeline-tjpb] S7 manifest: {manifestPath}");
             if (printSummary)
                 Console.WriteLine(JsonConvert.SerializeObject(manifest, Formatting.Indented));
+        }
+
+        private void WriteStage5Output(List<Dictionary<string, object>> docs, string outDir, bool printSummary)
+        {
+            docs ??= new List<Dictionary<string, object>>();
+            Directory.CreateDirectory(outDir);
+
+            var outputs = new List<Dictionary<string, object>>();
+            var grouped = docs.GroupBy(d => d.TryGetValue("process", out var p) ? p?.ToString() ?? "sem_processo" : "sem_processo")
+                              .ToList();
+
+            foreach (var grp in grouped)
+            {
+                var procName = grp.Key ?? "sem_processo";
+                var outPath = Path.Combine(outDir, $"{procName}.json");
+                var processFields = BuildProcessRow(procName, grp.ToList());
+                var payload = new
+                {
+                    stage = "S5",
+                    process = procName,
+                    process_fields = processFields,
+                    documents = grp.ToList()
+                };
+                File.WriteAllText(outPath, JsonConvert.SerializeObject(payload, Formatting.Indented));
+                outputs.Add(new Dictionary<string, object>
+                {
+                    ["process"] = procName,
+                    ["output"] = outPath,
+                    ["documents"] = grp.Count()
+                });
+            }
+
+            var manifest = new Dictionary<string, object>
+            {
+                ["stage"] = "S5",
+                ["output_dir"] = Path.GetFullPath(outDir),
+                ["outputs"] = outputs
+            };
+            var manifestPath = Path.Combine(outDir, "stage5_outputs.json");
+            File.WriteAllText(manifestPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
+
+            Console.WriteLine($"[pipeline-tjpb] S5 output: {Path.GetFullPath(outDir)}");
+            Console.WriteLine($"[pipeline-tjpb] S5 manifest: {manifestPath}");
+            if (printSummary)
+                Console.WriteLine(JsonConvert.SerializeObject(manifest, Formatting.Indented));
+        }
+
+        private void WriteDocTypeDtos(List<Dictionary<string, object>> docs, string outDir)
+        {
+            docs ??= new List<Dictionary<string, object>>();
+            Directory.CreateDirectory(outDir);
+
+            var grouped = docs.GroupBy(d => d.TryGetValue("process", out var p) ? p?.ToString() ?? "sem_processo" : "sem_processo")
+                              .ToList();
+
+            foreach (var grp in grouped)
+            {
+                var procName = grp.Key ?? "sem_processo";
+                var procDir = Path.Combine(outDir, procName);
+                Directory.CreateDirectory(procDir);
+
+                // Despacho: documento com is_despacho_valid == true (label/overlap + origem + assinatura).
+                var despachoDoc = PickBestDoc(grp.ToList(), d => GetBool(d, "is_despacho_valid"));
+                // Certidão CM: documento com is_certidao_valid == true.
+                var certidaoDoc = PickBestDoc(grp.ToList(), d => GetBool(d, "is_certidao_valid"));
+                // Requerimento: documento com is_requerimento_pagamento_honorarios == true.
+                var requerimentoDoc = PickBestDoc(grp.ToList(), d => GetBool(d, "is_requerimento_pagamento_honorarios"));
+
+                WriteDocTypeDto(procDir, procName, "despacho", "is_despacho_valid == true", despachoDoc);
+                WriteDocTypeDto(procDir, procName, "certidao_cm", "is_certidao_valid == true", certidaoDoc);
+                WriteDocTypeDto(procDir, procName, "requerimento_pagamento_honorarios", "is_requerimento_pagamento_honorarios == true", requerimentoDoc);
+            }
+        }
+
+        private void WriteDocTypeDto(string procDir, string process, string docType, string criteria, Dictionary<string, object>? doc)
+        {
+            var seed = GetDocSeed(process, docType);
+            if (doc != null)
+                MergeDocIntoSeed(seed, doc);
+            var payload = new Dictionary<string, object>
+            {
+                ["process"] = process,
+                ["doc_type"] = docType,
+                ["selection_criteria"] = criteria,
+                ["found"] = doc != null,
+                ["document"] = seed
+            };
+
+            var outPath = Path.Combine(procDir, $"{docType}.json");
+            File.WriteAllText(outPath, JsonConvert.SerializeObject(payload, Formatting.Indented));
         }
 
         private Dictionary<string, string> BuildProcessRow(string process, List<Dictionary<string, object>> docs)
@@ -1367,12 +1632,14 @@ namespace FilterPDF.Commands
             }
 
             var processoAdministrativo = PickField("PROCESSO_ADMINISTRATIVO", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+            var processoAdministrativoSei = PickMeta("sei_process", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
             if (string.IsNullOrWhiteSpace(processoAdministrativo))
-                processoAdministrativo = PickMeta("sei_process", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+                processoAdministrativo = processoAdministrativoSei;
 
             var processoJudicial = PickField("PROCESSO_JUDICIAL", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
             if (string.IsNullOrWhiteSpace(processoJudicial))
                 processoJudicial = PickMeta("process_cnj", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
+
 
             var perito = PickField("PERITO", despachoDoc, requerimentoDoc, certidaoDoc, fallbackDoc);
             if (string.IsNullOrWhiteSpace(perito))
@@ -1539,6 +1806,8 @@ namespace FilterPDF.Commands
             Ensure("signer", "");
             Ensure("signed_at", "");
             Ensure("header_hash", "");
+            Ensure("bookmark_first_paragraph", "");
+            Ensure("bookmark_last_paragraph", "");
             Ensure("title", "");
             Ensure("template", "");
             Ensure("sei_process", "");
@@ -1660,11 +1929,11 @@ namespace FilterPDF.Commands
                 : !string.IsNullOrWhiteSpace(signerFullText) ? signerFullText
                 : !string.IsNullOrWhiteSpace(signerLastLine) ? signerLastLine
                 : "";
-            string signedAt = sei.SignedAt ?? ExtractSignedAt(lastTwoText, footer, footerSignatureRaw);
-            string dateFooter = ExtractDateFromFooter(lastTwoText, footer, header, footerSignatureRaw);
-            string headerHash = HashText(header);
-            string template = docLabel; // não classificar; manter o nome do bookmark
-            string title = ExtractTitle(header, bookmarks, fullText, originMain, originSub);
+            string signedAt = sei.SignedAt ?? ExtractSignedAt(lastTwoText, footer ?? "", footerSignatureRaw ?? "");
+            string dateFooter = ExtractDateFromFooter(lastTwoText, footer ?? "", header ?? "", footerSignatureRaw ?? "");
+            string headerHash = HashText(header ?? "");
+            string template = docLabel ?? ""; // não classificar; manter o nome do bookmark
+            string title = ExtractTitle(header ?? "", bookmarks, fullText, originMain, originSub);
             var paras = BuildParagraphsFromWords(words);
             var orderedParas = paras.OrderBy(p => p.Page).ThenByDescending(p => p.Ny0).ToArray();
             var firstParaObj = orderedParas.FirstOrDefault();
@@ -1703,18 +1972,18 @@ namespace FilterPDF.Commands
                 ["header_hash"] = headerHash,
                 ["title"] = title,
                 ["template"] = template,
-                ["footer_signature_raw"] = footerSignatureRaw,
+                ["footer_signature_raw"] = footerSignatureRaw ?? "",
                 ["sei_process"] = string.IsNullOrWhiteSpace(sei.Process) ? procInfo.ProcessNumber : sei.Process,
                 ["process_cnj"] = cnj,
-                ["sei_doc"] = sei.DocNumber,
-                ["sei_crc"] = sei.CRC,
-                ["sei_verifier"] = sei.Verifier,
-                ["auth_url"] = sei.AuthUrl,
+                ["sei_doc"] = sei.DocNumber ?? "",
+                ["sei_crc"] = sei.CRC ?? "",
+                ["sei_verifier"] = sei.Verifier ?? "",
+                ["auth_url"] = sei.AuthUrl ?? "",
                 ["date_footer"] = dateFooter,
                 ["doc_head"] = docHead,
                 ["doc_tail"] = docTail,
                 ["process_line"] = procInfo.ProcessLine,
-                ["process_bbox"] = procInfo.ProcessBBox,
+                ["process_bbox"] = procInfo.ProcessBBox ?? (object)JValue.CreateNull(),
                 ["interested_line"] = party.InterestedLine,
                 ["interested_name"] = party.InterestedName,
                 ["interested_profession"] = party.InterestedProfession,
@@ -1722,8 +1991,8 @@ namespace FilterPDF.Commands
                 ["juizo_line"] = party.JuizoLine,
                 ["juizo_vara"] = party.JuizoVara,
                 ["comarca"] = party.Comarca,
-                ["interested_bbox"] = partyBBoxes.InterestedBBox,
-                ["juizo_bbox"] = partyBBoxes.JuizoBBox
+                ["interested_bbox"] = partyBBoxes.InterestedBBox ?? (object)JValue.CreateNull(),
+                ["juizo_bbox"] = partyBBoxes.JuizoBBox ?? (object)JValue.CreateNull()
             };
 
             if (debugSigner)
@@ -1740,6 +2009,70 @@ namespace FilterPDF.Commands
             }
 
             return meta;
+        }
+
+        private void ApplyDespachoHeadTailText(Dictionary<string, object> meta, string header, string subHeader, string footer, string footerSignatureRaw, ParagraphObj[] paragraphs, int startPage, int endPage)
+        {
+            if (meta == null) return;
+
+            var ordered = (paragraphs ?? Array.Empty<ParagraphObj>())
+                .OrderBy(p => p.Page)
+                .ThenByDescending(p => p.Ny0)
+                .ToList();
+
+            var firstPara = ordered.FirstOrDefault(p => p.Page == startPage) ?? ordered.FirstOrDefault();
+            var lastPageParas = ordered.Where(p => p.Page == endPage).ToList();
+            ParagraphObj? lastPara = null;
+            if (endPage > startPage && lastPageParas.Count > 0)
+            {
+                lastPara = lastPageParas
+                    .Where(p => !IsFooterParagraph(p.Text))
+                    .OrderBy(p => p.Ny0)
+                    .LastOrDefault() ?? lastPageParas.OrderBy(p => p.Ny0).LastOrDefault();
+            }
+
+            var headParts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(header)) headParts.Add(header);
+            if (!string.IsNullOrWhiteSpace(subHeader)) headParts.Add(subHeader);
+            if (!string.IsNullOrWhiteSpace(firstPara?.Text)) headParts.Add(firstPara.Text);
+            meta["doc_head"] = string.Join("\n", headParts.Where(p => !string.IsNullOrWhiteSpace(p)));
+
+            if (endPage > startPage)
+            {
+                var tailParts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(lastPara?.Text)) tailParts.Add(lastPara.Text);
+                if (!string.IsNullOrWhiteSpace(footer)) tailParts.Add(footer);
+                if (!string.IsNullOrWhiteSpace(footerSignatureRaw)) tailParts.Add(footerSignatureRaw);
+                meta["doc_tail"] = string.Join("\n", tailParts.Where(p => !string.IsNullOrWhiteSpace(p)));
+            }
+            else
+            {
+                meta["doc_tail"] = "";
+            }
+        }
+
+        private ParagraphSlice BuildBookmarkParagraphSlices(string header, string subHeader, string footer, ParagraphObj[] paragraphs, int startPage, int endPage)
+        {
+            var ordered = (paragraphs ?? Array.Empty<ParagraphObj>())
+                .OrderBy(p => p.Page)
+                .ThenByDescending(p => p.Ny0)
+                .ToList();
+
+            var firstPara = ordered.FirstOrDefault(p => p.Page == startPage) ?? ordered.FirstOrDefault();
+            var lastPara = ordered.LastOrDefault(p => p.Page == endPage) ?? ordered.LastOrDefault();
+
+            var firstText = firstPara?.Text ?? "";
+            var lastText = lastPara?.Text ?? "";
+            firstText = DespaceIfNeeded(firstText);
+            lastText = DespaceIfNeeded(lastText);
+
+            return new ParagraphSlice { First = firstText, Last = lastText };
+        }
+
+        private readonly struct ParagraphSlice
+        {
+            public string First { get; init; }
+            public string Last { get; init; }
         }
 
         private void ApplyDespachoHeadTailBBoxes(Dictionary<string, object> meta, DespachoDocumentInfo? despachoMatch, List<Dictionary<string, object>> words, int startPage, int endPage)
@@ -1763,6 +2096,9 @@ namespace FilterPDF.Commands
             if (head.BBox != null)
                 meta["doc_head_bbox"] = head.BBox;
 
+            if (end <= start)
+                return;
+
             var tailPara = PickTailParagraphFromDespacho(despachoMatch, end);
             var tail = ExtractTailBBox(words, tailPara, end);
             if (!string.IsNullOrWhiteSpace(tail.Text))
@@ -1776,8 +2112,8 @@ namespace FilterPDF.Commands
             if (string.IsNullOrWhiteSpace(anchorTemplatesDir))
                 return;
 
-            _anchorHeadTemplatePath = Path.Combine(anchorTemplatesDir, "tjpb_despacho_head.txt");
-            _anchorTailTemplatePath = Path.Combine(anchorTemplatesDir, "tjpb_despacho_tail.txt");
+            _anchorHeadTemplatePath = Path.Combine(anchorTemplatesDir, "tjpb_despacho_head_annotated.txt");
+            _anchorTailTemplatePath = Path.Combine(anchorTemplatesDir, "tjpb_despacho_tail_annotated.txt");
 
             if (_anchorHeadPlan == null && File.Exists(_anchorHeadTemplatePath))
                 _anchorHeadPlan = LoadAnchorPlan(_anchorHeadTemplatePath);
@@ -1849,7 +2185,7 @@ namespace FilterPDF.Commands
                     ["field_key"] = f.FieldKey,
                     ["occurrence"] = f.OccurrenceIndex,
                     ["type"] = f.Type.ToString(),
-                    ["value"] = f.Value,
+                    ["value"] = f.Value ?? (object)JValue.CreateNull(),
                     ["start"] = f.StartIndex,
                     ["end"] = f.EndIndex,
                     ["missing"] = f.Missing,
@@ -1879,9 +2215,12 @@ namespace FilterPDF.Commands
             if (head.BBox != null)
                 meta["doc_head_bbox"] = head.BBox;
 
-            var pages = new HashSet<int> { endPage };
-            if (endPage - 1 >= 1) pages.Add(endPage - 1);
-            var tailCandidates = ordered.Where(p => pages.Contains(p.Page1)).ToList();
+            if (endPage <= startPage)
+                return;
+
+            var tailCandidates = ordered.Where(p => p.Page1 == endPage).ToList();
+            if (tailCandidates.Count == 0)
+                return;
             var scored = tailCandidates
                 .Select(p => new { Para = p, Score = ScoreTailParagraph(p.Text) })
                 .Where(x => x.Score > 0 && !IsFooterParagraph(x.Para.Text))
@@ -1970,24 +2309,11 @@ namespace FilterPDF.Commands
         private ParagraphInfo? PickTailParagraphFromDespacho(DespachoDocumentInfo despachoMatch, int endPage)
         {
             if (despachoMatch == null) return null;
-            var pages = new HashSet<int> { endPage };
-            if (endPage - 1 >= 1)
-                pages.Add(endPage - 1);
-
             var paras = despachoMatch.Paragraphs
-                .Where(p => p.BBoxN != null && pages.Contains(p.Page1))
+                .Where(p => p.BBoxN != null && p.Page1 == endPage)
                 .OrderByDescending(p => p.Page1)
                 .ThenBy(p => p.BBoxN!.Y0)
                 .ToList();
-
-            if (paras.Count == 0)
-            {
-                paras = despachoMatch.Paragraphs
-                    .Where(p => p.BBoxN != null)
-                    .OrderByDescending(p => p.Page1)
-                    .ThenBy(p => p.BBoxN!.Y0)
-                    .ToList();
-            }
 
             if (paras.Count == 0) return null;
 
@@ -2276,10 +2602,10 @@ namespace FilterPDF.Commands
             return (interestedLine, interestedName, interestedProf, interestedEmail, juizoLine, juizoVara, comarca);
         }
 
-        private (Dictionary<string, double> InterestedBBox, Dictionary<string, double> JuizoBBox) ExtractPartyBBoxes(ParagraphObj[] paras, int startPage, int endPage)
+        private (Dictionary<string, double>? InterestedBBox, Dictionary<string, double>? JuizoBBox) ExtractPartyBBoxes(ParagraphObj[] paras, int startPage, int endPage)
         {
-            Dictionary<string, double> interested = null;
-            Dictionary<string, double> juizo = null;
+            Dictionary<string, double>? interested = null;
+            Dictionary<string, double>? juizo = null;
 
             foreach (var p in paras)
             {
@@ -2299,7 +2625,7 @@ namespace FilterPDF.Commands
             return (interested, juizo);
         }
 
-        private (string ProcessLine, string ProcessNumber, Dictionary<string, double> ProcessBBox) ExtractProcessInfo(ParagraphObj[] paras, string fallbackProcess)
+        private (string ProcessLine, string ProcessNumber, Dictionary<string, double>? ProcessBBox) ExtractProcessInfo(ParagraphObj[] paras, string? fallbackProcess)
         {
             foreach (var p in paras)
             {
@@ -2316,13 +2642,13 @@ namespace FilterPDF.Commands
 
         private class SeiMeta
         {
-            public string Process { get; set; }
-            public string DocNumber { get; set; }
-            public string CRC { get; set; }
-            public string Verifier { get; set; }
-            public string SignedAt { get; set; }
-            public string Signer { get; set; }
-            public string AuthUrl { get; set; }
+            public string? Process { get; set; }
+            public string? DocNumber { get; set; }
+            public string? CRC { get; set; }
+            public string? Verifier { get; set; }
+            public string? SignedAt { get; set; }
+            public string? Signer { get; set; }
+            public string? AuthUrl { get; set; }
         }
 
         private SeiMeta ExtractSeiMetadata(string fullText, string lastTwoText, string footer, string docLabel)
@@ -2496,7 +2822,7 @@ namespace FilterPDF.Commands
                     double spaceThreshold = ComputeSpaceThreshold(gaps, avgChar, singleRatio > 0.5);
 
                     var sb = new System.Text.StringBuilder();
-                    Dictionary<string, object> prev = null;
+                    Dictionary<string, object>? prev = null;
                     foreach (var w in ordered)
                     {
                         if (prev != null)
@@ -2725,13 +3051,14 @@ namespace FilterPDF.Commands
         {
             if (ws == null || ws.Count == 0) return "";
             var sorted = ws.OrderBy(w => Convert.ToDouble(w["x0"])).ToList();
-            string result = sorted[0]["text"].ToString();
+            string result = sorted[0].TryGetValue("text", out var firstVal) ? (firstVal?.ToString() ?? "") : "";
             double avgW = sorted.Average(w => Convert.ToDouble(w["x1"]) - Convert.ToDouble(w["x0"]));
             for (int i = 1; i < sorted.Count; i++)
             {
                 double gap = Convert.ToDouble(sorted[i]["x0"]) - Convert.ToDouble(sorted[i - 1]["x1"]);
                 int spaces = (gap > avgW * 0.2) ? Math.Max(1, (int)(gap / (avgW * spaceFactor))) : 0;
-                result += new string(' ', spaces) + sorted[i]["text"];
+                var token = sorted[i].TryGetValue("text", out var tv) ? (tv?.ToString() ?? "") : "";
+                result += new string(' ', spaces) + token;
             }
             return result;
         }
@@ -2833,7 +3160,7 @@ namespace FilterPDF.Commands
             return clean.GroupBy(x => x.ToLowerInvariant())
                         .OrderByDescending(g => g.Count())
                         .Select(g => g.Key)
-                        .FirstOrDefault();
+                        .FirstOrDefault() ?? "";
         }
 
         private double Median(List<double> items)
@@ -2885,13 +3212,13 @@ namespace FilterPDF.Commands
         private class LineObj
         {
             public int Page { get; set; }
-            public string Text { get; set; }
-            public string TextNorm { get; set; }
+            public string Text { get; set; } = "";
+            public string TextNorm { get; set; } = "";
             public double NX0 { get; set; }
             public double NX1 { get; set; }
             public double NY0 { get; set; }
             public double NY1 { get; set; }
-            public string Font { get; set; }
+            public string Font { get; set; } = "";
             public double FontSizeAvg { get; set; }
 
             public Dictionary<string, object> ToDict() => new Dictionary<string, object>
@@ -3768,7 +4095,7 @@ namespace FilterPDF.Commands
                         ["ny0"] = bbox.Value.ny0,
                         ["nx1"] = bbox.Value.nx1,
                         ["ny1"] = bbox.Value.ny1
-                    } : null;
+                    } : JValue.CreateNull();
                 }
                 return;
             }
@@ -3787,7 +4114,7 @@ namespace FilterPDF.Commands
                 ["ny0"] = bbox.Value.ny0,
                 ["nx1"] = bbox.Value.nx1,
                 ["ny1"] = bbox.Value.ny1
-            } : null;
+            } : JValue.CreateNull();
             fields.Add(item);
         }
 
@@ -4055,10 +4382,10 @@ namespace FilterPDF.Commands
                 }
             }
 
-            string perito = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "PERITO", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
-            string cpf = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "CPF_PERITO", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
-            string especialidade = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "ESPECIALIDADE", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
-            string profissao = profissaoVal;
+            string? perito = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "PERITO", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
+            string? cpf = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "CPF_PERITO", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
+            string? especialidade = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "ESPECIALIDADE", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
+            string? profissao = profissaoVal;
 
             // Fallback de espécie por referência (quando não houver match de honorários)
             var especieAtual = cleaned.FirstOrDefault(f =>
@@ -4109,8 +4436,8 @@ namespace FilterPDF.Commands
             }
             else
             {
-                string promA = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "PROMOVENTE", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
-                string promB = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "PROMOVIDO", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
+                string? promA = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "PROMOVENTE", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
+                string? promB = cleaned.FirstOrDefault(f => string.Equals(f.GetValueOrDefault("name")?.ToString(), "PROMOVIDO", StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value")?.ToString();
                 string normPerito = NormalizeName(perito ?? "");
 
                 bool peritoCoincideParte = (!string.IsNullOrWhiteSpace(normPerito) &&
@@ -4166,7 +4493,7 @@ namespace FilterPDF.Commands
             foreach (var f in dedup)
             {
                 if (!f.ContainsKey("bbox"))
-                    f["bbox"] = null;
+                    f["bbox"] = JValue.CreateNull();
             }
 
             return dedup;
@@ -4230,7 +4557,7 @@ namespace FilterPDF.Commands
                     ["method"] = "missing_required",
                     ["weight"] = 0.0,
                     ["page"] = 0,
-                    ["bbox"] = null
+                    ["bbox"] = JValue.CreateNull()
                 });
             }
 
@@ -4872,7 +5199,7 @@ namespace FilterPDF.Commands
                     ["ny0"] = bbox.Value.ny0,
                     ["nx1"] = bbox.Value.nx1,
                     ["ny1"] = bbox.Value.ny1
-                } : null;
+                } : JValue.CreateNull();
                 hits.Add(hit);
             }
 
@@ -5108,7 +5435,7 @@ namespace FilterPDF.Commands
                 ["ny0"] = bbox.Value.ny0,
                 ["nx1"] = bbox.Value.nx1,
                 ["ny1"] = bbox.Value.ny1
-            } : null;
+            } : JValue.CreateNull();
             return hit;
         }
 
@@ -5212,6 +5539,7 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
         }
 
         private string NormalizeDigits(string raw) => new string(raw.Where(char.IsDigit).ToArray());
+
 
         private List<Dictionary<string, object>> ExtractBookmarksForRange(PDFAnalysisResult analysis, int startPage, int endPage)
         {
@@ -5732,14 +6060,14 @@ private int FindPageForText(List<Dictionary<string, object>> words, string text)
                     ["method"] = info.Method ?? "not_found",
                     ["page"] = ev?.Page1 ?? 0,
                     ["snippet"] = ev?.Snippet ?? "",
-                    ["bboxN"] = ev?.BBoxN,
+                    ["bboxN"] = ev?.BBoxN ?? (object)JValue.CreateNull(),
                     ["bbox"] = ev?.BBoxN != null ? new Dictionary<string, double>
                     {
                         ["nx0"] = ev.BBoxN.X0,
                         ["ny0"] = ev.BBoxN.Y0,
                         ["nx1"] = ev.BBoxN.X1,
                         ["ny1"] = ev.BBoxN.Y1
-                    } : null,
+                    } : JValue.CreateNull(),
                     ["source"] = source
                 });
             }
